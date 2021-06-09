@@ -87,11 +87,15 @@ public class PoseServer implements Runnable {
 					String text = q.take();
 					JSONObject obj = new JSONObject(text);
 					int msec = obj.getInt("Msec");
-					Map<Byte, Short> servoMap = ServoConverter.jsonToMap(obj.getJSONObject("ServoMap"));
-					Map<Byte, Short> ledMap = LedConverter.jsonToMap(obj.getJSONObject("LedMap"));
 					CRobotPose pose = new CRobotPose();
-					pose.SetPose(servoMap);
-					pose.SetLed(ledMap);
+					if (obj.has("ServoMap")) {
+						Map<Byte, Short> servoMap = ServoConverter.jsonToMap(obj.getJSONObject("ServoMap"));
+						pose.SetPose(servoMap);
+					}
+					if (obj.has("LedMap")) {
+						Map<Byte, Short> ledMap = LedConverter.jsonToMap(obj.getJSONObject("LedMap"));
+						pose.SetLed(ledMap);
+					}
 					PosePlayer.play(msec, pose);
 				}
 			} catch (InterruptedException e) {
