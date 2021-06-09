@@ -96,7 +96,7 @@ public class RobotSys {
 			torqueIds  = new  Byte[]{    1,    2,    3,    4,    5,    6,    7,    8};
 			torqueVals = new Short[]{  100,  100,  100,  100,  100,  100,  100,  100};
 			ledIds     = new  Byte[]{    0,    1,    2,    8,    9,   10,   11,   12,   13};
-			ledVals    = new Short[]{    0,    0,    0,  180,   80,    0,  180,   80,    0};
+			ledVals    = new Short[]{    0,    0,    0,  255,  255,  255,  255,  255,  255};
 			CRobotPose pose = new CRobotPose();
 			pose.SetPose(poseIds, poseVals);
 			pose.SetTorque(torqueIds, torqueVals);
