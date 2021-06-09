@@ -6,7 +6,6 @@
 			<attribute name="module" value="true"/>
 		</attributes>
 	</classpathentry>
-	<classpathentry kind="lib" path="lib/activemq-all-5.15.8.jar" sourcepath="C:/Users/tiio/AppData/Local/Temp/.org.sf.feeling.decompiler1621061456065/source/activemq-all-5.15.8-sources.jar"/>
 	<classpathentry kind="lib" path="lib/core-2.2.jar"/>
 	<classpathentry kind="lib" path="lib/gson-2.8.5.jar"/>
 	<classpathentry kind="lib" path="lib/javase-2.2.jar"/>
