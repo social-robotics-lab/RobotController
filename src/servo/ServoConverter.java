@@ -13,6 +13,8 @@ public class ServoConverter {
 			return ServoConverter_Sota.jsonToMap(obj);
 		} else if (Params.robotType.equals("CommU")) {
 			return ServoConverter_CommU.jsonToMap(obj);
+		} else if (Params.robotType.equals("Dog")) {
+			return ServoConverter_CommU.jsonToMap(obj);
 		} else {
 			return new HashMap<Byte, Short>();
 		}
@@ -22,6 +24,8 @@ public class ServoConverter {
 		if (Params.robotType.equals("Sota")) {
 			return ServoConverter_Sota.mapToJson(map);
 		} else if (Params.robotType.equals("CommU")) {
+			return ServoConverter_CommU.mapToJson(map);
+		} else if (Params.robotType.equals("Dog")) {
 			return ServoConverter_CommU.mapToJson(map);
 		} else {
 			return new JSONObject();

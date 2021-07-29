@@ -5,7 +5,7 @@ import java.util.Map;
 
 import org.json.JSONObject;
 
-public class ServoConverter_DogSota {
+public class ServoConverter_Dog {
 
 	private static final Map<String, Byte> map = new HashMap<String, Byte>() {
 		{

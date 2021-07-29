@@ -14,6 +14,8 @@ public class LedConverter {
 			return LedConverter_Sota.jsonToMap(obj);
 		} else if (Params.robotType.equals("CommU")) {
 			return LedConverter_CommU.jsonToMap(obj);
+		} else if (Params.robotType.equals("Dog")) {
+			return LedConverter_Dog.jsonToMap(obj);
 		} else {
 			return new HashMap<Byte, Short>();
 		}
@@ -24,6 +26,8 @@ public class LedConverter {
 			return LedConverter_Sota.mapToJson(map);
 		} else if (Params.robotType.equals("CommU")) {
 			return LedConverter_CommU.mapToJson(map);
+		} else if (Params.robotType.equals("Dog")) {
+			return LedConverter_Dog.mapToJson(map);
 		} else {
 			return new JSONObject();
 		}
