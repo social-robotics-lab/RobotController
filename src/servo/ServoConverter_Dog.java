@@ -23,29 +23,29 @@ public class ServoConverter_Dog {
 			byte id = map.get(key);
 			int val = json.getInt(key);
 			switch (key) {
-			case "BODY_Y": // -120 ~ 120 (servo: -150 ~ 150)
-			    if      (val <-120) ret.put(id, (short) (-120 * 10));
-			    else if (val > 120) ret.put(id, (short) ( 120 * 10));
-			    else                ret.put(id, (short) (val  * 10));
-			    continue;
-			case "L_ELBO": // -90 ~ 65
+			case "BODY_Y": // -90 ~ 90
 			    if      (val < -90) ret.put(id, (short) (-90 * 10));
-			    else if (val >  65) ret.put(id, (short) ( 65 * 10));
-			    else                ret.put(id, (short) (val * 10));
-			    continue;
-			case "R_ELBO": // -65 ~ 90
-			    if      (val < -65) ret.put(id, (short) (-65 * 10));
 			    else if (val >  90) ret.put(id, (short) ( 90 * 10));
 			    else                ret.put(id, (short) (val * 10));
 			    continue;
-			case "HEAD_P": // -27 ~ 5
-			    if      (val < -27) ret.put(id, (short) (-27 * 10));
-			    else if (val >   5) ret.put(id, (short) (  5 * 10));
+			case "L_ELBO": // -90 ~ 90
+			    if      (val < -90) ret.put(id, (short) (-90 * 10));
+			    else if (val >  90) ret.put(id, (short) ( 90 * 10));
 			    else                ret.put(id, (short) (val * 10));
 			    continue;
-			case "HEAD_R": // -45 ~ 45
-			    if      (val < -45) ret.put(id, (short) (-45 * 10));
-			    else if (val >  45) ret.put(id, (short) ( 45 * 10));
+			case "R_ELBO": // -90 ~ 90
+			    if      (val < -90) ret.put(id, (short) (-90 * 10));
+			    else if (val >  90) ret.put(id, (short) ( 90 * 10));
+			    else                ret.put(id, (short) (val * 10));
+			    continue;
+			case "HEAD_P": // -70 ~ 60
+			    if      (val < -70) ret.put(id, (short) (-70 * 10));
+			    else if (val >  60) ret.put(id, (short) ( 60 * 10));
+			    else                ret.put(id, (short) (val * 10));
+			    continue;
+			case "HEAD_R": // -70 ~ 70
+			    if      (val < -70) ret.put(id, (short) (-70 * 10));
+			    else if (val >  70) ret.put(id, (short) ( 70 * 10));
 			    else                ret.put(id, (short) (val * 10));
 			    continue;
 			}
