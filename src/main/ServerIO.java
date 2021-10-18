@@ -20,7 +20,7 @@ public class ServerIO {
 
 	public byte[] read() throws IOException {
 		int size = readSize();
-		if (size == 0) throw new IOException();
+		if (size == 0) return new byte[0];
 		return readData(size);
 	}
 

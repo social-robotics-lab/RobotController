@@ -3,7 +3,7 @@ package utils;
 import java.util.HashMap;
 import java.util.Map;
 
-import main.RobotSys;
+import servo.RobotSys;
 
 public class AxisReader {
 

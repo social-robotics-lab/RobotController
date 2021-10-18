@@ -9,9 +9,7 @@ import java.util.Properties;
 public class Params {
 
 	public static final String robotType;
-	public static final int speechPort;
-	public static final int posePort;
-	public static final int readPort;
+	public static final int port;
 
 	static {
 		Properties properties = loadProperties("System.properties");
@@ -19,18 +17,10 @@ public class Params {
 		robotType = properties.getProperty("ROBOT_TYPE");
 		checkNullProperties(robotType);
 		// Server port
-		final String strSpeechPort = properties.getProperty("SPEECH_PORT");
+		final String strSpeechPort = properties.getProperty("PORT");
 		checkNullProperties(strSpeechPort);
 		checkIntProperties(strSpeechPort);
-		speechPort = Integer.valueOf(strSpeechPort);
-		final String strPosePort = properties.getProperty("POSE_PORT");
-		checkNullProperties(strPosePort);
-		checkIntProperties(strPosePort);
-		posePort = Integer.valueOf(strPosePort);
-		final String strReadPort = properties.getProperty("READ_PORT");
-		checkNullProperties(strReadPort);
-		checkIntProperties(strReadPort);
-		readPort = Integer.valueOf(strReadPort);
+		port = Integer.valueOf(strSpeechPort);
 	}
 
 	private static Properties loadProperties(String path) {

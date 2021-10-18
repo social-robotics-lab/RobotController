@@ -1,4 +1,7 @@
-package main;
+package servo;
+
+import org.json.JSONArray;
+import org.json.JSONObject;
 
 import jp.vstone.RobotLib.CCommUMotion;
 import jp.vstone.RobotLib.CRobotMem;
@@ -6,16 +9,19 @@ import jp.vstone.RobotLib.CRobotMotion;
 import jp.vstone.RobotLib.CRobotPose;
 import jp.vstone.RobotLib.CRobotUtil;
 import jp.vstone.RobotLib.CSotaMotion;
+import main.Params;
 
 public class RobotSys {
 
 	public static CRobotMem mem;
 	public static CRobotMotion motion;
 	public static String LOCK_KEY = "local";
+	public static JSONArray idleServoMaps;
 
 	public static void initialize() {
 		mem = new CRobotMem();
 		motion = getInstanceOfCRobotMotion();
+		idleServoMaps = getInstanceOfCIdleServoMaps();
 	}
 
 	public static void lockServoLedHandle() {
@@ -144,6 +150,48 @@ public class RobotSys {
 		}
 		else {
 			System.err.println("The constructer could not connect to the robot memory. ");
+			return null;
+		}
+	}
+
+	private static JSONArray getInstanceOfCIdleServoMaps() {
+		JSONArray array = new JSONArray();
+		if (Params.robotType.equals("CommU")) {
+			JSONObject servoMap1 = new JSONObject();
+			servoMap1.put("R_SHOU_R",   0);
+			servoMap1.put("L_SHOU_R",   0);
+			JSONObject servoMap2 = new JSONObject();
+			servoMap2.put("R_SHOU_R",  10);
+			servoMap2.put("L_SHOU_R", -10);
+			array.put(servoMap1);
+			array.put(servoMap2);
+			return array;
+		} else if (Params.robotType.equals("Sota")) {
+			JSONObject servoMap1 = new JSONObject();
+			servoMap1.put("R_SHOU",   80);
+			servoMap1.put("R_ELBO",   15);
+			servoMap1.put("L_ELBO",  -15);
+			servoMap1.put("L_SHOU",  -80);
+			JSONObject servoMap2 = new JSONObject();
+			servoMap2.put("R_SHOU",  100);
+			servoMap2.put("R_ELBO",    5);
+			servoMap2.put("L_ELBO",   -5);
+			servoMap2.put("L_SHOU", -100);
+			array.put(servoMap1);
+			array.put(servoMap2);
+			return array;
+		} else if (Params.robotType.equals("Dog")) {
+			JSONObject servoMap1 = new JSONObject();
+			servoMap1.put("R_ELBO",   15);
+			servoMap1.put("L_ELBO",  -15);
+			JSONObject servoMap2 = new JSONObject();
+			servoMap2.put("R_ELBO",    5);
+			servoMap2.put("L_ELBO",   -5);
+			array.put(servoMap1);
+			array.put(servoMap2);
+			return array;
+		} else {
+			System.err.println("RobotType is invalid. robotType=" + Params.robotType);
 			return null;
 		}
 	}

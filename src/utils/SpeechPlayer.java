@@ -10,44 +10,32 @@ public class SpeechPlayer {
 	private static final Object lock = new Object();
 	private static Process process;
 
-	public static void play(Path path) {
+
+	public static void play(Path path) throws IOException {
 		synchronized (lock) {
-			try {
-				process = new ProcessBuilder("aplay", path.toString()).start();
-				process.waitFor();
-			} catch (IOException e) {
-				e.printStackTrace();
-			} catch (InterruptedException e) {
-				stop();
-			}
+			process = new ProcessBuilder("aplay", path.toString()).start();
 		}
 	}
 
-	public static void play(byte[] bytes) {
+	public static void play(byte[] bytes) throws IOException {
 		synchronized (lock) {
-			try {
-				Path path = Paths.get("__temp_wav");
-				Files.write(path, bytes);
-				process = new ProcessBuilder("aplay", path.toString()).start();
-				process.waitFor();
-			} catch (IOException e) {
-				e.printStackTrace();
-			} catch (InterruptedException e) {
-				stop();
-			}
+			Path path = Paths.get("__temp_wav");
+			Files.write(path, bytes);
+			play(path);
 		}
 	}
 
-	private static void stop() {
-		if (process != null && process.isAlive()) {
-			try {
-				new ProcessBuilder("killall", "aplay").start();
-				while (process.isAlive()) { Thread.sleep(10); }
-			} catch (IOException | InterruptedException e) {
-				e.printStackTrace();
+	public static void stop() {
+		synchronized (lock) {
+			if (process != null && process.isAlive()) {
+				try {
+					new ProcessBuilder("killall", "aplay").start();
+					while (process.isAlive()) { Thread.sleep(10); }
+				} catch (IOException | InterruptedException e) {
+					e.printStackTrace();
+				}
+				process = null;
 			}
-			process = null;
 		}
 	}
-
 }
