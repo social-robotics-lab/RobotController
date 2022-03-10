@@ -182,11 +182,11 @@ public class RobotSys {
 			return array;
 		} else if (Params.robotType.equals("Dog")) {
 			JSONObject servoMap1 = new JSONObject();
-			servoMap1.put("R_ELBO",   15);
-			servoMap1.put("L_ELBO",  -15);
+			servoMap1.put("R_ELBO",   60);
+			servoMap1.put("L_ELBO",  -60);
 			JSONObject servoMap2 = new JSONObject();
-			servoMap2.put("R_ELBO",    5);
-			servoMap2.put("L_ELBO",   -5);
+			servoMap2.put("R_ELBO",   50);
+			servoMap2.put("L_ELBO",  -50);
 			array.put(servoMap1);
 			array.put(servoMap2);
 			return array;

@@ -23,29 +23,29 @@ public class ServoConverter_Dog {
 			byte id = map.get(key);
 			int val = json.getInt(key);
 			switch (key) {
-			case "BODY_Y": // -90 ~ 90
-			    if      (val < -90) ret.put(id, (short) (-90 * 10));
-			    else if (val >  90) ret.put(id, (short) ( 90 * 10));
+			case "BODY_Y": // -80 ~ 80
+			    if      (val < -80) ret.put(id, (short) (-80 * 10));
+			    else if (val >  80) ret.put(id, (short) ( 80 * 10));
 			    else                ret.put(id, (short) (val * 10));
 			    continue;
-			case "L_ELBO": // -90 ~ 90
-			    if      (val < -90) ret.put(id, (short) (-90 * 10));
-			    else if (val >  90) ret.put(id, (short) ( 90 * 10));
-			    else                ret.put(id, (short) (val * 10));
-			    continue;
-			case "R_ELBO": // -90 ~ 90
-			    if      (val < -90) ret.put(id, (short) (-90 * 10));
-			    else if (val >  90) ret.put(id, (short) ( 90 * 10));
-			    else                ret.put(id, (short) (val * 10));
-			    continue;
-			case "HEAD_P": // -70 ~ 60
-			    if      (val < -70) ret.put(id, (short) (-70 * 10));
-			    else if (val >  60) ret.put(id, (short) ( 60 * 10));
-			    else                ret.put(id, (short) (val * 10));
-			    continue;
-			case "HEAD_R": // -70 ~ 70
+			case "L_ELBO": // -70 ~ 70
 			    if      (val < -70) ret.put(id, (short) (-70 * 10));
 			    else if (val >  70) ret.put(id, (short) ( 70 * 10));
+			    else                ret.put(id, (short) (val * 10));
+			    continue;
+			case "R_ELBO": // -70 ~ 70
+			    if      (val < -70) ret.put(id, (short) (-70 * 10));
+			    else if (val >  70) ret.put(id, (short) ( 70 * 10));
+			    else                ret.put(id, (short) (val * 10));
+			    continue;
+			case "HEAD_P": // -70 ~ 70
+			    if      (val < -70) ret.put(id, (short) (-70 * 10));
+			    else if (val >  70) ret.put(id, (short) ( 70 * 10));
+			    else                ret.put(id, (short) (val * 10));
+			    continue;
+			case "HEAD_R": // -50 ~ 50
+			    if      (val < -50) ret.put(id, (short) (-50 * 10));
+			    else if (val >  50) ret.put(id, (short) ( 50 * 10));
 			    else                ret.put(id, (short) (val * 10));
 			    continue;
 			}
