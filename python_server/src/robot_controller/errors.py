@@ -192,3 +192,116 @@ class ResponseNotAllowedError(ValidationError):
         ValidationError.__init__(
             self, "Command {0!r} does not allow a v1 response".format(command)
         )
+
+
+def _summarize_invalid_value(value):
+    # type: (typing.Any) -> str
+    """Return a bounded description suitable for validation messages."""
+    if isinstance(value, dict):
+        return "<object with {0} fields>".format(len(value))
+    if isinstance(value, (list, tuple)):
+        return "<array with {0} elements>".format(len(value))
+    rendered = repr(value)
+    if len(rendered) > 80:
+        return rendered[:77] + "..."
+    return rendered
+
+
+class PayloadDecodeError(DecodeError):
+    """A JSON command payload is not valid strict UTF-8."""
+
+    def __init__(self, command):
+        # type: (str) -> None
+        self.command = command
+        DecodeError.__init__(
+            self,
+            "Payload for command {0!r} is not valid UTF-8".format(command),
+        )
+
+
+class PayloadJsonError(DecodeError):
+    """A decoded JSON command payload has invalid JSON syntax."""
+
+    def __init__(self, command):
+        # type: (str) -> None
+        self.command = command
+        DecodeError.__init__(
+            self,
+            "Payload for command {0!r} is not valid JSON".format(command),
+        )
+
+
+class NonStandardJsonNumberError(PayloadJsonError):
+    """A JSON payload contains NaN or an Infinity token."""
+
+    def __init__(self, command, invalid_value):
+        # type: (str, str) -> None
+        self.command = command
+        self.invalid_value = invalid_value
+        DecodeError.__init__(
+            self,
+            "Payload for command {0!r} contains non-standard JSON number "
+            "{1!r}".format(command, invalid_value),
+        )
+
+
+class PayloadValidationError(ValidationError):
+    """Base class for a rejected decoded JSON payload value."""
+
+    def __init__(self, command, path, invalid_value, expected, message=None):
+        # type: (str, str, typing.Any, str, typing.Optional[str]) -> None
+        self.command = command
+        self.path = path
+        self.field = path
+        self.invalid_value = invalid_value
+        self.expected = expected
+        if message is None:
+            message = (
+                "Invalid value at {0} for command {1!r}: {2}; expected {3}"
+            ).format(
+                path,
+                command,
+                _summarize_invalid_value(invalid_value),
+                expected,
+            )
+        ValidationError.__init__(self, message)
+
+
+class InvalidTopLevelTypeError(PayloadValidationError):
+    """A command's JSON top-level value has the wrong type."""
+
+
+class MissingFieldError(PayloadValidationError):
+    """A required JSON field or field group is missing."""
+
+
+class InvalidFieldTypeError(PayloadValidationError):
+    """A JSON field has the wrong type."""
+
+
+class InvalidFieldValueError(PayloadValidationError):
+    """A typed JSON field violates a value constraint."""
+
+
+class UnknownServoError(PayloadValidationError):
+    """A ServoMap key is not present in the selected robot profile."""
+
+
+class UnknownLedError(PayloadValidationError):
+    """A LedMap key is not present in the selected robot profile."""
+
+
+class ServoRangeError(PayloadValidationError):
+    """A servo value is outside its profile range."""
+
+
+class LedRangeError(PayloadValidationError):
+    """An LED value is outside its profile range."""
+
+
+class EmptyMotionError(PayloadValidationError):
+    """A Motion JSON array contains no poses."""
+
+
+class MotionTooLargeError(PayloadValidationError):
+    """A Motion exceeds its configured pose-count or duration limit."""
