@@ -7,6 +7,14 @@ class ProtocolError(Exception):
     """Base class for protocol processing failures."""
 
 
+class DecodeError(ProtocolError):
+    """Base class for protocol text decoding failures."""
+
+
+class ValidationError(ProtocolError):
+    """Base class for rejected protocol values."""
+
+
 class FrameReadError(ProtocolError):
     """A socket error occurred while receiving part of a frame."""
 
@@ -95,4 +103,92 @@ class FrameWriteError(ProtocolError):
         ProtocolError.__init__(
             self,
             "Failed to send encoded frame of {0} bytes".format(expected_bytes),
+        )
+
+
+class SessionFrameError(ProtocolError):
+    """Base class for a frame failure at a legacy v1 session stage."""
+
+    def __init__(self, stage, frame_error):
+        # type: (str, ProtocolError) -> None
+        self.stage = stage
+        self.frame_error = frame_error
+        ProtocolError.__init__(
+            self,
+            "Legacy v1 {0} frame failed: {1}".format(stage, frame_error),
+        )
+
+
+class CommandFrameError(SessionFrameError):
+    """The command frame could not be read."""
+
+    def __init__(self, frame_error):
+        # type: (ProtocolError) -> None
+        SessionFrameError.__init__(self, "command", frame_error)
+
+
+class PayloadFrameError(SessionFrameError):
+    """The required payload frame could not be read."""
+
+    def __init__(self, frame_error):
+        # type: (ProtocolError) -> None
+        SessionFrameError.__init__(self, "payload", frame_error)
+
+
+class ResponseFrameError(SessionFrameError):
+    """The response frame could not be sent."""
+
+    def __init__(self, frame_error):
+        # type: (ProtocolError) -> None
+        SessionFrameError.__init__(self, "response", frame_error)
+
+
+class CommandDecodeError(DecodeError):
+    """Command bytes are not valid strict UTF-8."""
+
+    def __init__(self, command_bytes):
+        # type: (bytes) -> None
+        self.command_bytes = command_bytes
+        DecodeError.__init__(self, "Command is not valid UTF-8")
+
+
+class EmptyCommandError(ValidationError):
+    """The decoded command name is empty."""
+
+    def __init__(self):
+        # type: () -> None
+        ValidationError.__init__(self, "Command must not be empty")
+
+
+class UnknownCommandError(ValidationError):
+    """The decoded command name is not defined by legacy v1."""
+
+    def __init__(self, command):
+        # type: (str) -> None
+        self.command = command
+        ValidationError.__init__(
+            self, "Unknown legacy v1 command: {0!r}".format(command)
+        )
+
+
+class MissingPayloadError(ValidationError):
+    """A payload-required command has no payload or an empty payload."""
+
+    def __init__(self, command, frame_error=None):
+        # type: (str, typing.Optional[ProtocolError]) -> None
+        self.command = command
+        self.frame_error = frame_error
+        ValidationError.__init__(
+            self, "Command {0!r} requires a non-empty payload".format(command)
+        )
+
+
+class ResponseNotAllowedError(ValidationError):
+    """A response was requested for a v1 command that has no response."""
+
+    def __init__(self, command):
+        # type: (str) -> None
+        self.command = command
+        ValidationError.__init__(
+            self, "Command {0!r} does not allow a v1 response".format(command)
         )
