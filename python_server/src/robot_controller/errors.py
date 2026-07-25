@@ -305,3 +305,47 @@ class EmptyMotionError(PayloadValidationError):
 
 class MotionTooLargeError(PayloadValidationError):
     """A Motion exceeds its configured pose-count or duration limit."""
+
+
+class InvalidDecodedCommandError(ValidationError):
+    """A Router input is not a supported DecodedCommand combination."""
+
+    def __init__(self, command, expected, actual_type):
+        # type: (typing.Optional[str], str, str) -> None
+        self.command = command
+        self.expected = expected
+        self.actual_type = actual_type
+        ValidationError.__init__(
+            self,
+            "Invalid decoded command {0!r}: expected {1}, received {2}".format(
+                command, expected, actual_type
+            ),
+        )
+
+
+class InvalidAxesError(ValidationError):
+    """A command target returned an invalid read_axes mapping."""
+
+    def __init__(self, path, invalid_value, expected):
+        # type: (str, typing.Any, str) -> None
+        self.path = path
+        self.field = path
+        self.invalid_value = invalid_value
+        self.expected = expected
+        ValidationError.__init__(
+            self,
+            "Invalid read_axes value at {0}: {1}; expected {2}".format(
+                path, _summarize_invalid_value(invalid_value), expected
+            ),
+        )
+
+
+class CommandExecutionError(Exception):
+    """A high-level command target failed while executing one command."""
+
+    def __init__(self, command):
+        # type: (str) -> None
+        self.command = command
+        Exception.__init__(
+            self, "Execution failed for command {0!r}".format(command)
+        )
