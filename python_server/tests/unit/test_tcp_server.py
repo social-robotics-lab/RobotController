@@ -25,6 +25,7 @@ from robot_controller.protocol.validation import (
 )
 from robot_controller.router import CommandRouter
 from robot_controller.tcp_server import (
+    DEFAULT_ACCEPT_POLL_INTERVAL_SECONDS,
     DEFAULT_BACKLOG,
     DEFAULT_CLIENT_TIMEOUT_SECONDS,
     DEFAULT_HOST,
@@ -76,6 +77,7 @@ class FakeListeningSocket(object):
         self.events = []
         self.close_calls = 0
         self.shutdown_calls = []
+        self.timeout_values = []
         self.on_empty = None
 
     def setsockopt(self, level, option, value):
@@ -90,6 +92,10 @@ class FakeListeningSocket(object):
     def getsockname(self):
         self.events.append(("getsockname",))
         return self.bound_address
+
+    def settimeout(self, value):
+        self.events.append(("listen_settimeout", value))
+        self.timeout_values.append(value)
 
     def accept(self):
         self.events.append(("accept",))
@@ -260,6 +266,7 @@ def test_config_defaults_match_confirmed_server_values():
     )
     assert config.session_limits is DEFAULT_LIMITS
     assert config.decoder_limits is DEFAULT_VALIDATION_LIMITS
+    assert DEFAULT_ACCEPT_POLL_INTERVAL_SECONDS == 0.25
 
 
 @pytest.mark.parametrize("port", [-1, 65536, True, 1.5, "22222"])
@@ -361,6 +368,10 @@ def test_serve_creates_binds_and_listens_once_in_order(
         ("listen", 7),
         ("getsockname",),
     ]
+    assert (
+        "listen_settimeout",
+        DEFAULT_ACCEPT_POLL_INTERVAL_SECONDS,
+    ) in listening.events
     assert sum(1 for event in listening.events if event[0] == "listen") == 1
     assert executor_factory.calls == [2]
     assert server.bound_address == ("127.0.0.1", 42000)
@@ -369,6 +380,29 @@ def test_serve_creates_binds_and_listens_once_in_order(
     assert server.is_stopped is True
     assert listening.close_calls == 1
     assert executor.shutdown_calls == [True]
+
+
+def test_accept_poll_timeout_allows_signal_processing_without_failure(
+    robot_profile, router
+):
+    listening = FakeListeningSocket([socket.timeout("poll")])
+    executor = ImmediateExecutor()
+    server, _, _ = make_server(
+        robot_profile,
+        router,
+        listening,
+        executor,
+    )
+    stop_when_accept_queue_is_empty(server, listening)
+
+    server.serve_forever()
+
+    assert sum(
+        1 for event in listening.events if event[0] == "accept"
+    ) == 2
+    assert listening.close_calls == 1
+    assert executor.shutdown_calls == [True]
+    assert server.is_stopped is True
 
 
 def test_listening_callback_runs_only_after_bound_address_is_available(

@@ -34,6 +34,10 @@ SUPPORTED_MOCK_PROFILES = (DEFAULT_MOCK_PROFILE,)
 SUPPORTED_LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR")
 
 
+class _SignalShutdown(BaseException):
+    """Interrupt a blocking server call after a console stop request."""
+
+
 _MockApplicationConfigBase = collections.namedtuple(
     "_MockApplicationConfigBase",
     [
@@ -297,13 +301,19 @@ def _install_signal_handlers(stop_requested):
     def request_stop(signum, frame):
         # type: (int, typing.Any) -> None
         stop_requested.set()
+        raise _SignalShutdown()
 
     signal_numbers = [signal.SIGINT]
     sigterm = getattr(signal, "SIGTERM", None)
     if sigterm is not None:
         signal_numbers.append(sigterm)
+    sigbreak = getattr(signal, "SIGBREAK", None)
+    if sigbreak is not None:
+        signal_numbers.append(sigbreak)
 
     for signal_number in signal_numbers:
+        if signal_number in previous_handlers:
+            continue
         previous_handlers[signal_number] = signal.getsignal(signal_number)
         signal.signal(signal_number, request_stop)
     return previous_handlers
@@ -313,12 +323,6 @@ def _restore_signal_handlers(previous_handlers):
     # type: (typing.Mapping[int, typing.Any]) -> None
     for signal_number, handler in previous_handlers.items():
         signal.signal(signal_number, handler)
-
-
-def _shutdown_when_requested(stop_requested, application):
-    # type: (threading.Event, MockApplication) -> None
-    stop_requested.wait()
-    application.shutdown()
 
 
 def main(argv=None):
@@ -333,7 +337,6 @@ def main(argv=None):
     application = None
     stop_requested = threading.Event()
     previous_handlers = {}
-    shutdown_thread = None
     try:
         config = MockApplicationConfig(
             host=arguments.host,
@@ -344,16 +347,9 @@ def main(argv=None):
         )
         application = create_mock_application(config)
         previous_handlers = _install_signal_handlers(stop_requested)
-        shutdown_thread = threading.Thread(
-            target=_shutdown_when_requested,
-            args=(stop_requested, application),
-            name="mock-server-shutdown",
-        )
-        shutdown_thread.daemon = True
-        shutdown_thread.start()
         application.run()
         return 0
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, _SignalShutdown):
         return 0
     except Exception as error:
         if stop_requested.is_set():
@@ -367,8 +363,6 @@ def main(argv=None):
         stop_requested.set()
         if application is not None:
             application.shutdown()
-        if shutdown_thread is not None:
-            shutdown_thread.join()
         if previous_handlers:
             _restore_signal_handlers(previous_handlers)
 

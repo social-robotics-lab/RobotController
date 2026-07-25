@@ -279,6 +279,23 @@ def test_main_runs_and_shuts_down_application(monkeypatch):
     assert application.shutdown_calls >= 1
 
 
+def test_main_does_not_create_shutdown_coordinator_thread(monkeypatch):
+    import robot_controller.mock_server as module
+
+    application = FakeApplication()
+
+    def forbidden_thread(*args, **kwargs):
+        raise AssertionError("shutdown coordinator thread was created")
+
+    monkeypatch.setattr(
+        module, "create_mock_application", lambda config: application
+    )
+    monkeypatch.setattr(module.threading, "Thread", forbidden_thread)
+
+    assert main([]) == 0
+    assert application.shutdown_calls >= 1
+
+
 def test_main_treats_keyboard_interrupt_as_clean_shutdown(monkeypatch):
     import robot_controller.mock_server as module
 
@@ -373,12 +390,19 @@ def test_signal_handlers_are_installed_only_by_main_and_restored(monkeypatch):
     restored = [
         item for item in signal_calls if item[1] is old_handlers[item[0]]
     ]
-    expected_count = 1 + int(hasattr(signal, "SIGTERM"))
+    signal_numbers = [signal.SIGINT]
+    if hasattr(signal, "SIGTERM"):
+        signal_numbers.append(signal.SIGTERM)
+    if hasattr(signal, "SIGBREAK"):
+        signal_numbers.append(signal.SIGBREAK)
+    expected_count = len(set(signal_numbers))
     assert len(installed) == expected_count
     assert len(restored) == expected_count
 
 
-def test_installed_signal_handler_only_sets_stop_request(monkeypatch):
+def test_signal_handler_sets_stop_request_and_interrupts_blocking_run(
+    monkeypatch,
+):
     import robot_controller.mock_server as module
 
     installed = {}
@@ -400,7 +424,36 @@ def test_installed_signal_handler_only_sets_stop_request(monkeypatch):
     assert signal.SIGINT in installed
     if hasattr(signal, "SIGTERM"):
         assert signal.SIGTERM in installed
+    if hasattr(signal, "SIGBREAK"):
+        assert signal.SIGBREAK in installed
     assert not stop_requested.is_set()
-    installed[signal.SIGINT](signal.SIGINT, None)
+    with pytest.raises(module._SignalShutdown):
+        installed[signal.SIGINT](signal.SIGINT, None)
     assert stop_requested.is_set()
     assert all(handler == signal.SIG_DFL for handler in previous.values())
+
+
+def test_signal_handler_does_not_call_application_shutdown_or_join(
+    monkeypatch,
+):
+    import robot_controller.mock_server as module
+
+    installed = {}
+    stop_requested = threading.Event()
+
+    monkeypatch.setattr(
+        module.signal,
+        "getsignal",
+        lambda signum: signal.SIG_DFL,
+    )
+    monkeypatch.setattr(
+        module.signal,
+        "signal",
+        lambda signum, handler: installed.update({signum: handler}),
+    )
+
+    module._install_signal_handlers(stop_requested)
+
+    with pytest.raises(module._SignalShutdown):
+        installed[signal.SIGINT](signal.SIGINT, None)
+    assert stop_requested.is_set()

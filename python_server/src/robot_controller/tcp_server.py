@@ -29,6 +29,7 @@ DEFAULT_PORT = 22222
 DEFAULT_BACKLOG = 16
 DEFAULT_MAX_WORKERS = 16
 DEFAULT_CLIENT_TIMEOUT_SECONDS = 5.0
+DEFAULT_ACCEPT_POLL_INTERVAL_SECONDS = 0.25
 
 
 _LegacyV1TcpServerConfigBase = collections.namedtuple(
@@ -221,6 +222,10 @@ class LegacyV1TcpServer(object):
             listen_socket.bind((self._config.host, self._config.port))
             listen_socket.listen(self._config.backlog)
             bound_address = listen_socket.getsockname()
+            # Windows may defer Python signal handlers during Winsock accept.
+            listen_socket.settimeout(
+                DEFAULT_ACCEPT_POLL_INTERVAL_SECONDS
+            )
 
             with self._state_lock:
                 if self._shutdown_event.is_set():
@@ -288,6 +293,10 @@ class LegacyV1TcpServer(object):
         while not self._shutdown_event.is_set():
             try:
                 client_socket, peer_address = listen_socket.accept()
+            except socket.timeout:
+                if self._shutdown_event.is_set():
+                    break
+                continue
             except OSError:
                 if self._shutdown_event.is_set():
                     break
