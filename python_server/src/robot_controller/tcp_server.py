@@ -109,8 +109,9 @@ class LegacyV1TcpServer(object):
         socket_factory=None,
         executor_factory=None,
         connection_handler=None,
+        on_listening=None,
     ):
-        # type: (RobotProfile, CommandRouter, typing.Optional[LegacyV1TcpServerConfig], typing.Optional[typing.Callable[..., typing.Any]], typing.Optional[typing.Callable[..., typing.Any]], typing.Optional[typing.Callable[..., typing.Any]]) -> None
+        # type: (RobotProfile, CommandRouter, typing.Optional[LegacyV1TcpServerConfig], typing.Optional[typing.Callable[..., typing.Any]], typing.Optional[typing.Callable[..., typing.Any]], typing.Optional[typing.Callable[..., typing.Any]], typing.Optional[typing.Callable[..., typing.Any]]) -> None
         if not isinstance(robot_profile, RobotProfile):
             raise TypeError("robot_profile must be RobotProfile")
         if not isinstance(router, CommandRouter):
@@ -119,6 +120,8 @@ class LegacyV1TcpServer(object):
             config = LegacyV1TcpServerConfig()
         if not isinstance(config, LegacyV1TcpServerConfig):
             raise TypeError("config must be LegacyV1TcpServerConfig")
+        if on_listening is not None and not callable(on_listening):
+            raise TypeError("on_listening must be callable")
 
         self._robot_profile = robot_profile
         self._router = router
@@ -128,6 +131,7 @@ class LegacyV1TcpServer(object):
             executor_factory or concurrent.futures.ThreadPoolExecutor
         )
         self._connection_handler = connection_handler or handle_connection
+        self._on_listening = on_listening
 
         self._capacity = threading.BoundedSemaphore(config.max_workers)
         self._shutdown_event = threading.Event()
@@ -223,6 +227,8 @@ class LegacyV1TcpServer(object):
                     return
                 self._bound_address = bound_address
                 self._listening = True
+            if self._on_listening is not None:
+                self._on_listening(self)
             self._listening_event.set()
 
             with self._state_lock:

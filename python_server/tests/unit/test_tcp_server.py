@@ -371,6 +371,36 @@ def test_serve_creates_binds_and_listens_once_in_order(
     assert executor.shutdown_calls == [True]
 
 
+def test_listening_callback_runs_only_after_bound_address_is_available(
+    robot_profile, router
+):
+    listening = FakeListeningSocket(bound_address=("127.0.0.1", 42001))
+    executor = ImmediateExecutor()
+    callback_observations = []
+
+    def on_listening(server):
+        callback_observations.append(
+            (server.bound_address, server.is_listening)
+        )
+        server.shutdown()
+
+    server = LegacyV1TcpServer(
+        robot_profile=robot_profile,
+        router=router,
+        socket_factory=FakeSocketFactory(listening),
+        executor_factory=FakeExecutorFactory(executor),
+        on_listening=on_listening,
+    )
+
+    assert callback_observations == []
+    server.serve_forever()
+
+    assert callback_observations == [
+        (("127.0.0.1", 42001), True)
+    ]
+    assert not any(event[0] == "accept" for event in listening.events)
+
+
 def test_accepted_socket_timeout_precedes_single_handler_call_and_close(
     robot_profile, router
 ):

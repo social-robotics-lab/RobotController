@@ -105,3 +105,22 @@ class RobotProfile(object):
         """Return the inclusive range for a known LED name."""
         return self._led_ranges[name]
 
+
+def create_mock_robot_profile():
+    # type: () -> RobotProfile
+    """Return a small hardware-free profile for protocol testing.
+
+    These ranges are a permissive Mock validation envelope. They are not
+    verified hardware limits and must not be used as real robot safety data.
+    Public names follow the legacy Sota spelling where it is unambiguous.
+    """
+    return RobotProfile(
+        {
+            "BODY_Y": (-180, 180),
+            "HEAD_P": (-180, 180),
+            "HEAD_Y": (-180, 180),
+        },
+        {
+            "MOUTH": (0, 255),
+        },
+    )
