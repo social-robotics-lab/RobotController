@@ -9,7 +9,12 @@ from robot_controller.protocol.commands import (
     LegacyV1Limits,
 )
 from robot_controller.protocol.decoder import decode_request
-from robot_controller.protocol.legacy_v1 import read_request, write_response
+from robot_controller.protocol.legacy_v1 import (
+    DEFAULT_TIMEOUTS,
+    LegacyV1Timeouts,
+    read_request,
+    write_response,
+)
 from robot_controller.protocol.validation import (
     DEFAULT_VALIDATION_LIMITS,
     ValidationLimits,
@@ -34,15 +39,21 @@ def handle_connection(
     router,
     session_limits=DEFAULT_LIMITS,
     decoder_limits=DEFAULT_VALIDATION_LIMITS,
+    session_timeouts=DEFAULT_TIMEOUTS,
 ):
-    # type: (typing.Any, RobotProfile, CommandRouter, LegacyV1Limits, ValidationLimits) -> ConnectionHandleResult
+    # type: (typing.Any, RobotProfile, CommandRouter, LegacyV1Limits, ValidationLimits, LegacyV1Timeouts) -> ConnectionHandleResult
     """Read, decode, dispatch, and optionally respond to one v1 request.
 
-    The caller owns ``sock``. This function does not close or shut down it,
-    change its timeout, accept another connection, or read a second command.
+    The caller owns ``sock``. This function does not close or shut it down,
+    accept another connection, or read a second command. Stage-specific
+    inactivity timeouts are always restored to the caller's original value.
     Existing layer-specific exceptions propagate unchanged to the caller.
     """
-    request = read_request(sock, limits=session_limits)
+    request = read_request(
+        sock,
+        limits=session_limits,
+        timeouts=session_timeouts,
+    )
     decoded_command = decode_request(
         request,
         robot_profile,
@@ -52,7 +63,12 @@ def handle_connection(
 
     response_sent = False
     if dispatch_result.response_payload is not None:
-        write_response(sock, request, dispatch_result.response_payload)
+        write_response(
+            sock,
+            request,
+            dispatch_result.response_payload,
+            timeouts=session_timeouts,
+        )
         response_sent = True
 
     return ConnectionHandleResult(

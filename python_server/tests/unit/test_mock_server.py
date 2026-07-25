@@ -21,6 +21,7 @@ from robot_controller.mock_server import (
 )
 from robot_controller.models import IdleMotionSettings, Motion, Pose
 from robot_controller.profiles import create_mock_robot_profile
+from robot_controller.protocol.legacy_v1 import LegacyV1Timeouts
 from robot_controller.router import CommandRouter
 from robot_controller.tcp_server import LegacyV1TcpServer
 
@@ -83,6 +84,12 @@ def test_composition_builds_existing_layers_without_listening():
     assert isinstance(application.server, LegacyV1TcpServer)
     assert application.server.bound_address is None
     assert application.server.is_listening is False
+    assert application.server.config.session_timeouts == LegacyV1Timeouts(
+        5.0,
+        5.0,
+        30.0,
+        5.0,
+    )
     assert tuple(threading.enumerate()) == before_threads
     assert application.target.read_axes() == {
         "BODY_Y": 0,
@@ -150,6 +157,7 @@ def test_cli_defaults_are_local_only_and_deterministic():
     assert arguments.port == 22222
     assert arguments.max_workers == 16
     assert arguments.client_timeout == 5.0
+    assert arguments.wav_timeout == 30.0
     assert arguments.log_level == "INFO"
     assert arguments.profile == DEFAULT_MOCK_PROFILE == "mock"
 
@@ -165,6 +173,8 @@ def test_cli_accepts_all_supported_overrides():
             "2",
             "--client-timeout",
             "1.25",
+            "--wav-timeout",
+            "45",
             "--log-level",
             "DEBUG",
             "--profile",
@@ -176,8 +186,26 @@ def test_cli_accepts_all_supported_overrides():
     assert arguments.port == 0
     assert arguments.max_workers == 2
     assert arguments.client_timeout == 1.25
+    assert arguments.wav_timeout == 45.0
     assert arguments.log_level == "DEBUG"
     assert arguments.profile == "mock"
+
+
+def test_mock_config_maps_client_and_wav_timeouts_to_server_stages():
+    application = create_mock_application(
+        MockApplicationConfig(
+            client_timeout_seconds=2.0,
+            wav_timeout_seconds=40.0,
+        )
+    )
+
+    assert application.server.config.client_timeout_seconds == 2.0
+    assert application.server.config.session_timeouts == LegacyV1Timeouts(
+        2.0,
+        2.0,
+        40.0,
+        2.0,
+    )
 
 
 @pytest.mark.parametrize(
@@ -192,6 +220,11 @@ def test_cli_accepts_all_supported_overrides():
         ["--client-timeout", "-1"],
         ["--client-timeout", "nan"],
         ["--client-timeout", "inf"],
+        ["--wav-timeout", "0"],
+        ["--wav-timeout", "-1"],
+        ["--wav-timeout", "nan"],
+        ["--wav-timeout", "inf"],
+        ["--wav-timeout", "true"],
         ["--log-level", "TRACE"],
         ["--profile", "sota"],
     ],

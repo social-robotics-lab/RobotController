@@ -14,6 +14,10 @@ from robot_controller.profiles import (
     RobotProfile,
     create_mock_robot_profile,
 )
+from robot_controller.protocol.legacy_v1 import (
+    DEFAULT_TIMEOUTS,
+    LegacyV1Timeouts,
+)
 from robot_controller.router import CommandRouter
 from robot_controller.tcp_server import (
     DEFAULT_BACKLOG,
@@ -47,6 +51,7 @@ _MockApplicationConfigBase = collections.namedtuple(
         "max_workers",
         "client_timeout_seconds",
         "profile",
+        "wav_timeout_seconds",
     ],
 )
 
@@ -64,18 +69,26 @@ class MockApplicationConfig(_MockApplicationConfigBase):
         max_workers=DEFAULT_MAX_WORKERS,
         client_timeout_seconds=DEFAULT_CLIENT_TIMEOUT_SECONDS,
         profile=DEFAULT_MOCK_PROFILE,
+        wav_timeout_seconds=DEFAULT_TIMEOUTS.wav_payload_timeout,
     ):
-        # type: (str, int, int, int, float, str) -> MockApplicationConfig
+        # type: (str, int, int, int, float, str, float) -> MockApplicationConfig
         if profile not in SUPPORTED_MOCK_PROFILES:
             raise ValueError(
                 "unsupported Mock profile: {0}".format(profile)
             )
+        session_timeouts = LegacyV1Timeouts(
+            command_timeout=client_timeout_seconds,
+            json_payload_timeout=client_timeout_seconds,
+            wav_payload_timeout=wav_timeout_seconds,
+            response_timeout=client_timeout_seconds,
+        )
         validated_server_config = LegacyV1TcpServerConfig(
             host=host,
             port=port,
             backlog=backlog,
             max_workers=max_workers,
             client_timeout_seconds=client_timeout_seconds,
+            session_timeouts=session_timeouts,
         )
         return _MockApplicationConfigBase.__new__(
             cls,
@@ -85,6 +98,7 @@ class MockApplicationConfig(_MockApplicationConfigBase):
             validated_server_config.max_workers,
             validated_server_config.client_timeout_seconds,
             profile,
+            session_timeouts.wav_payload_timeout,
         )
 
 
@@ -182,21 +196,29 @@ def create_mock_application(config):
         logger.info(
             (
                 "Mock server listening host=%s port=%d profile=%s "
-                "max_workers=%d client_timeout=%s"
+                "max_workers=%d client_timeout=%s wav_timeout=%s"
             ),
             bound_host,
             bound_port,
             config.profile,
             config.max_workers,
             config.client_timeout_seconds,
+            config.wav_timeout_seconds,
         )
 
+    session_timeouts = LegacyV1Timeouts(
+        command_timeout=config.client_timeout_seconds,
+        json_payload_timeout=config.client_timeout_seconds,
+        wav_payload_timeout=config.wav_timeout_seconds,
+        response_timeout=config.client_timeout_seconds,
+    )
     server_config = LegacyV1TcpServerConfig(
         host=config.host,
         port=config.port,
         backlog=config.backlog,
         max_workers=config.max_workers,
         client_timeout_seconds=config.client_timeout_seconds,
+        session_timeouts=session_timeouts,
     )
     server = LegacyV1TcpServer(
         robot_profile=profile,
@@ -257,6 +279,16 @@ def _positive_float_argument(value):
     return parsed
 
 
+def _wav_timeout_argument(value):
+    # type: (str) -> float
+    try:
+        return _positive_float_argument(value)
+    except argparse.ArgumentTypeError:
+        raise argparse.ArgumentTypeError(
+            "wav timeout must be finite and greater than zero"
+        )
+
+
 def build_argument_parser():
     # type: () -> argparse.ArgumentParser
     """Build the injectable Python 3.6-compatible CLI parser."""
@@ -274,6 +306,11 @@ def build_argument_parser():
         "--client-timeout",
         type=_positive_float_argument,
         default=DEFAULT_CLIENT_TIMEOUT_SECONDS,
+    )
+    parser.add_argument(
+        "--wav-timeout",
+        type=_wav_timeout_argument,
+        default=DEFAULT_TIMEOUTS.wav_payload_timeout,
     )
     parser.add_argument(
         "--log-level",
@@ -344,6 +381,7 @@ def main(argv=None):
             max_workers=arguments.max_workers,
             client_timeout_seconds=arguments.client_timeout,
             profile=arguments.profile,
+            wav_timeout_seconds=arguments.wav_timeout,
         )
         application = create_mock_application(config)
         previous_handlers = _install_signal_handlers(stop_requested)

@@ -33,11 +33,13 @@ from robot_controller.protocol.legacy_v1 import (
 class FakeSocket(object):
     """Deterministic socket double for session tests."""
 
-    def __init__(self, recv_results=None, send_error=None):
+    def __init__(self, recv_results=None, send_error=None, timeout=12.5):
         self.recv_results = list(recv_results or [])
         self.recv_calls = []
         self.send_error = send_error
         self.sent_data = []
+        self.timeout = timeout
+        self.settimeout_calls = []
 
     def recv(self, size):
         self.recv_calls.append(size)
@@ -55,6 +57,13 @@ class FakeSocket(object):
         self.sent_data.append(data)
         if self.send_error is not None:
             raise self.send_error
+
+    def gettimeout(self):
+        return self.timeout
+
+    def settimeout(self, value):
+        self.settimeout_calls.append(value)
+        self.timeout = value
 
 
 def framed_socket(*payloads):

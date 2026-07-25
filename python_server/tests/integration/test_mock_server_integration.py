@@ -114,6 +114,7 @@ def test_composed_mock_application_serves_stop_pose_and_read_axes(caplog):
             assert "profile=mock" in caplog.text
             assert "max_workers=2" in caplog.text
             assert "client_timeout=2.0" in caplog.text
+            assert "wav_timeout=30.0" in caplog.text
         except BaseException:
             application.shutdown()
             server_thread.join(5.0)

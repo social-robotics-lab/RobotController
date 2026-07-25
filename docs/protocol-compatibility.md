@@ -382,6 +382,9 @@ TCPの1回の `recv()` が、要求した全バイトを返すと仮定しては
 | command frame header/body | 5 seconds |
 | JSON frame header/body | 5 seconds |
 | WAV payload frame header/body | 30 seconds |
+| `read_axes` response frame header/body | 5 seconds |
+
+Session層はコマンド種別に応じてペイロードのタイムアウトを選択し、応答送信時も対応するタイムアウトを適用する。Frame Codecはコマンド種別を認識しない。各値は絶対期限ではなく、各ブロッキングsocket操作の無通信タイムアウトであり、処理後は呼び出し前のsocket timeoutへ復元する。
 
 ## 15. 互換性テスト
 

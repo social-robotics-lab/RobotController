@@ -14,6 +14,10 @@ from robot_controller.protocol.commands import (
     DEFAULT_LIMITS,
     LegacyV1Limits,
 )
+from robot_controller.protocol.legacy_v1 import (
+    DEFAULT_TIMEOUTS,
+    LegacyV1Timeouts,
+)
 from robot_controller.protocol.validation import (
     DEFAULT_VALIDATION_LIMITS,
     ValidationLimits,
@@ -28,7 +32,7 @@ DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 22222
 DEFAULT_BACKLOG = 16
 DEFAULT_MAX_WORKERS = 16
-DEFAULT_CLIENT_TIMEOUT_SECONDS = 5.0
+DEFAULT_CLIENT_TIMEOUT_SECONDS = DEFAULT_TIMEOUTS.command_timeout
 DEFAULT_ACCEPT_POLL_INTERVAL_SECONDS = 0.25
 
 
@@ -42,6 +46,7 @@ _LegacyV1TcpServerConfigBase = collections.namedtuple(
         "client_timeout_seconds",
         "session_limits",
         "decoder_limits",
+        "session_timeouts",
     ],
 )
 
@@ -60,8 +65,9 @@ class LegacyV1TcpServerConfig(_LegacyV1TcpServerConfigBase):
         client_timeout_seconds=DEFAULT_CLIENT_TIMEOUT_SECONDS,
         session_limits=DEFAULT_LIMITS,
         decoder_limits=DEFAULT_VALIDATION_LIMITS,
+        session_timeouts=None,
     ):
-        # type: (str, int, int, int, float, LegacyV1Limits, ValidationLimits) -> LegacyV1TcpServerConfig
+        # type: (str, int, int, int, float, LegacyV1Limits, ValidationLimits, typing.Optional[LegacyV1Timeouts]) -> LegacyV1TcpServerConfig
         if not isinstance(host, str):
             raise TypeError("host must be a string")
         _validate_integer("port", port, 0, 65535)
@@ -83,6 +89,17 @@ class LegacyV1TcpServerConfig(_LegacyV1TcpServerConfigBase):
             raise TypeError("session_limits must be LegacyV1Limits")
         if not isinstance(decoder_limits, ValidationLimits):
             raise TypeError("decoder_limits must be ValidationLimits")
+        if session_timeouts is None:
+            session_timeouts = LegacyV1Timeouts(
+                command_timeout=client_timeout_seconds,
+                json_payload_timeout=client_timeout_seconds,
+                wav_payload_timeout=DEFAULT_TIMEOUTS.wav_payload_timeout,
+                response_timeout=client_timeout_seconds,
+            )
+        if not isinstance(session_timeouts, LegacyV1Timeouts):
+            raise TypeError(
+                "session_timeouts must be LegacyV1Timeouts"
+            )
         return _LegacyV1TcpServerConfigBase.__new__(
             cls,
             host,
@@ -92,6 +109,7 @@ class LegacyV1TcpServerConfig(_LegacyV1TcpServerConfigBase):
             client_timeout_seconds,
             session_limits,
             decoder_limits,
+            session_timeouts,
         )
 
 
@@ -361,6 +379,7 @@ class LegacyV1TcpServer(object):
                 self._router,
                 session_limits=self._config.session_limits,
                 decoder_limits=self._config.decoder_limits,
+                session_timeouts=self._config.session_timeouts,
             )
         except Exception as error:
             logger.warning(

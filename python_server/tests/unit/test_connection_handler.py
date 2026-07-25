@@ -33,7 +33,10 @@ from robot_controller.protocol.commands import (
     LegacyV1Limits,
 )
 from robot_controller.protocol.frame import encode_frame
-from robot_controller.protocol.legacy_v1 import LegacyV1Request
+from robot_controller.protocol.legacy_v1 import (
+    LegacyV1Request,
+    LegacyV1Timeouts,
+)
 from robot_controller.protocol.validation import ValidationLimits
 from robot_controller.router import (
     CommandDispatchResult,
@@ -111,8 +114,54 @@ def assert_socket_ownership_unchanged(sock, expected_timeout=12.5):
     """Assert that the handler did not take ownership of the socket."""
     assert sock.close_calls == 0
     assert sock.shutdown_calls == []
-    assert sock.settimeout_calls == []
     assert sock.gettimeout() == expected_timeout
+
+
+def test_handler_applies_custom_timeouts_and_restores_socket(robot_profile):
+    payload = b'{"Msec":1,"ServoMap":{"HEAD_Y":0}}'
+    sock = TrackingSocket(wire_request("play_pose", payload))
+    target, router = make_handler_parts()
+    timeouts = LegacyV1Timeouts(1.0, 2.0, 3.0, 4.0)
+
+    result = connection_handler.handle_connection(
+        sock,
+        robot_profile,
+        router,
+        session_timeouts=timeouts,
+    )
+
+    assert result.command == "play_pose"
+    assert target.call_count("play_pose") == 1
+    assert sock.settimeout_calls == [1.0, 12.5, 2.0, 12.5]
+    assert_socket_ownership_unchanged(sock)
+
+
+def test_json_validation_failure_leaves_original_timeout(robot_profile):
+    sock = TrackingSocket(wire_request("play_pose", b"{"))
+    target, router = make_handler_parts()
+
+    with pytest.raises(PayloadJsonError):
+        connection_handler.handle_connection(sock, robot_profile, router)
+
+    assert target.calls == ()
+    assert sock.gettimeout() == 12.5
+    assert sock.settimeout_calls == [5.0, 12.5, 5.0, 12.5]
+
+
+def test_read_axes_response_failure_restores_original_timeout(robot_profile):
+    failure = socket.timeout("send timed out")
+    sock = TrackingSocket(
+        wire_request("read_axes"),
+        send_error=failure,
+    )
+    target, router = make_handler_parts({"HEAD_Y": 0})
+
+    with pytest.raises(ResponseFrameError):
+        connection_handler.handle_connection(sock, robot_profile, router)
+
+    assert target.call_count("read_axes") == 1
+    assert sock.gettimeout() == 12.5
+    assert sock.settimeout_calls == [5.0, 12.5, 5.0, 12.5]
 
 
 @pytest.mark.parametrize(
@@ -300,16 +349,29 @@ def test_layers_run_in_required_order_for_read_axes(
             events.append(("dispatch", value))
             return CommandDispatchResult(b'{"HEAD_Y":0}')
 
-    def fake_read_request(value, limits):
-        events.append(("read_request", value, limits))
+    def fake_read_request(value, limits, timeouts):
+        events.append(("read_request", value, limits, timeouts))
         return request
 
     def fake_decode_request(value, profile, limits):
         events.append(("decode_request", value, profile, limits))
         return decoded
 
-    def fake_write_response(value, original_request, payload):
-        events.append(("write_response", value, original_request, payload))
+    def fake_write_response(
+        value,
+        original_request,
+        payload,
+        timeouts,
+    ):
+        events.append(
+            (
+                "write_response",
+                value,
+                original_request,
+                payload,
+                timeouts,
+            )
+        )
 
     monkeypatch.setattr(
         connection_handler, "read_request", fake_read_request
@@ -359,7 +421,7 @@ def test_no_response_payload_skips_write_response(
     monkeypatch.setattr(
         connection_handler,
         "read_request",
-        lambda sock, limits: events.append("read") or request,
+        lambda sock, limits, timeouts: events.append("read") or request,
     )
     monkeypatch.setattr(
         connection_handler,
@@ -396,7 +458,7 @@ def test_decode_failure_prevents_dispatch_and_response(
     monkeypatch.setattr(
         connection_handler,
         "read_request",
-        lambda sock, limits: events.append("read") or request,
+        lambda sock, limits, timeouts: events.append("read") or request,
     )
 
     def fail_decode(value, profile, limits):
@@ -437,7 +499,7 @@ def test_dispatch_failure_prevents_response(
     monkeypatch.setattr(
         connection_handler,
         "read_request",
-        lambda sock, limits: events.append("read") or request,
+        lambda sock, limits, timeouts: events.append("read") or request,
     )
     monkeypatch.setattr(
         connection_handler,

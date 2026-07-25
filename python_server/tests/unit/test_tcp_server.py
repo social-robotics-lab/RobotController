@@ -23,6 +23,7 @@ from robot_controller.protocol.validation import (
     DEFAULT_VALIDATION_LIMITS,
     ValidationLimits,
 )
+from robot_controller.protocol.legacy_v1 import LegacyV1Timeouts
 from robot_controller.router import CommandRouter
 from robot_controller.tcp_server import (
     DEFAULT_ACCEPT_POLL_INTERVAL_SECONDS,
@@ -266,6 +267,12 @@ def test_config_defaults_match_confirmed_server_values():
     )
     assert config.session_limits is DEFAULT_LIMITS
     assert config.decoder_limits is DEFAULT_VALIDATION_LIMITS
+    assert config.session_timeouts == LegacyV1Timeouts(
+        5.0,
+        5.0,
+        30.0,
+        5.0,
+    )
     assert DEFAULT_ACCEPT_POLL_INTERVAL_SECONDS == 0.25
 
 
@@ -303,6 +310,8 @@ def test_config_rejects_invalid_host_and_limit_objects():
         LegacyV1TcpServerConfig(session_limits=object())
     with pytest.raises(TypeError):
         LegacyV1TcpServerConfig(decoder_limits=object())
+    with pytest.raises(TypeError):
+        LegacyV1TcpServerConfig(session_timeouts=object())
 
 
 def test_config_accepts_port_zero_and_custom_immutable_limits():
@@ -444,10 +453,24 @@ def test_accepted_socket_timeout_precedes_single_handler_call_and_close(
     executor = ImmediateExecutor()
     calls = []
 
-    def handler(sock, profile, actual_router, session_limits, decoder_limits):
+    def handler(
+        sock,
+        profile,
+        actual_router,
+        session_limits,
+        decoder_limits,
+        session_timeouts,
+    ):
         events.append(("handler", sock.name))
         calls.append(
-            (sock, profile, actual_router, session_limits, decoder_limits)
+            (
+                sock,
+                profile,
+                actual_router,
+                session_limits,
+                decoder_limits,
+                session_timeouts,
+            )
         )
 
     config = LegacyV1TcpServerConfig(client_timeout_seconds=2.5)
@@ -474,6 +497,7 @@ def test_accepted_socket_timeout_precedes_single_handler_call_and_close(
     assert calls[0][2] is router
     assert calls[0][3] is config.session_limits
     assert calls[0][4] is config.decoder_limits
+    assert calls[0][5] is config.session_timeouts
     assert client.close_calls == 1
     assert client.shutdown_calls == []
     assert server.active_connection_count == 0

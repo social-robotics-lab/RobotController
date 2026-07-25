@@ -353,6 +353,9 @@ TCPフレーム処理とコマンドルーターの変更を必須としない�
 | maximum concurrent connection handlers | 16 |
 | command and JSON read timeout | 5 seconds |
 | WAV payload read timeout | 30 seconds |
+| `read_axes` response write timeout | 5 seconds |
+
+これらは絶対期限ではなく、各ブロッキングsocket操作に適用する無通信タイムアウトとする。段階終了時には、呼び出し前のsocket timeoutへ復元する。
 
 * 同時接続数
 * フレームサイズ
