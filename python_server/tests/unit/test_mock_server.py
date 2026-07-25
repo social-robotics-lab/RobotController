@@ -9,11 +9,13 @@ import threading
 
 import pytest
 
+from robot_controller.command_service import SerializedRobotCommandTarget
 from robot_controller.command_target import RecordingCommandTarget
 from robot_controller.mock_server import (
     DEFAULT_MOCK_HOST,
     DEFAULT_MOCK_PROFILE,
     LoggingRecordingCommandTarget,
+    MockApplication,
     MockApplicationConfig,
     create_mock_application,
     main,
@@ -80,10 +82,12 @@ def test_composition_builds_existing_layers_without_listening():
 
     assert isinstance(application.profile, type(create_mock_robot_profile()))
     assert isinstance(application.target, RecordingCommandTarget)
+    assert isinstance(application.service, SerializedRobotCommandTarget)
     assert isinstance(application.router, CommandRouter)
     assert isinstance(application.server, LegacyV1TcpServer)
     assert application.server.bound_address is None
     assert application.server.is_listening is False
+    assert application.service.is_ready is False
     assert application.server.config.session_timeouts == LegacyV1Timeouts(
         5.0,
         5.0,
@@ -107,6 +111,7 @@ def test_composition_constructs_dependencies_in_documented_order(monkeypatch):
 
     profile = EmptyProfile()
     target = object()
+    service = object()
     router = object()
     server = object()
 
@@ -123,6 +128,11 @@ def test_composition_constructs_dependencies_in_documented_order(monkeypatch):
             order.append(("router", actual_target))
             return router
 
+    class ServiceFactory(object):
+        def __new__(cls, downstream, config=None):
+            order.append(("service", downstream))
+            return service
+
     class ServerFactory(object):
         def __new__(cls, **kwargs):
             order.append(
@@ -136,6 +146,7 @@ def test_composition_constructs_dependencies_in_documented_order(monkeypatch):
 
     monkeypatch.setattr(module, "create_mock_robot_profile", profile_factory)
     monkeypatch.setattr(module, "LoggingRecordingCommandTarget", TargetFactory)
+    monkeypatch.setattr(module, "SerializedRobotCommandTarget", ServiceFactory)
     monkeypatch.setattr(module, "CommandRouter", RouterFactory)
     monkeypatch.setattr(module, "LegacyV1TcpServer", ServerFactory)
 
@@ -144,10 +155,125 @@ def test_composition_constructs_dependencies_in_documented_order(monkeypatch):
     assert order == [
         "profile",
         ("target", {}),
-        ("router", application.target),
+        ("service", application.target),
+        ("router", application.service),
         ("server", profile, router),
     ]
     assert application.server is server
+
+
+class LifecycleService(object):
+    def __init__(self, events, start_error=None, ready=True):
+        self.events = events
+        self.start_error = start_error
+        self.ready = ready
+        self.shutdown_calls = 0
+
+    def start(self):
+        self.events.append("service.start")
+        if self.start_error is not None:
+            raise self.start_error
+
+    def wait_until_ready(self, timeout=None):
+        self.events.append("service.ready")
+        return self.ready
+
+    def shutdown(self):
+        self.events.append("service.shutdown")
+        self.shutdown_calls += 1
+
+
+class LifecycleServer(object):
+    def __init__(self, events, serve_error=None):
+        self.events = events
+        self.serve_error = serve_error
+        self.shutdown_calls = 0
+
+    def serve_forever(self):
+        self.events.append("server.serve")
+        if self.serve_error is not None:
+            raise self.serve_error
+
+    def shutdown(self):
+        self.events.append("server.shutdown")
+        self.shutdown_calls += 1
+
+
+def make_lifecycle_application(service, server):
+    return MockApplication(
+        MockApplicationConfig(),
+        object(),
+        object(),
+        service,
+        object(),
+        server,
+    )
+
+
+def test_application_starts_service_and_waits_ready_before_server():
+    events = []
+    service = LifecycleService(events)
+    server = LifecycleServer(events)
+    application = make_lifecycle_application(service, server)
+
+    application.run()
+
+    assert events == [
+        "service.start",
+        "service.ready",
+        "server.serve",
+        "service.shutdown",
+    ]
+
+
+def test_service_start_failure_prevents_listen_and_stops_service():
+    events = []
+    service = LifecycleService(
+        events,
+        start_error=RuntimeError("start failed"),
+    )
+    server = LifecycleServer(events)
+    application = make_lifecycle_application(service, server)
+
+    with pytest.raises(RuntimeError):
+        application.run()
+
+    assert "server.serve" not in events
+    assert events == ["service.start", "service.shutdown"]
+
+
+def test_server_failure_stops_service():
+    events = []
+    service = LifecycleService(events)
+    server = LifecycleServer(events, OSError("bind failed"))
+    application = make_lifecycle_application(service, server)
+
+    with pytest.raises(OSError):
+        application.run()
+
+    assert events == [
+        "service.start",
+        "service.ready",
+        "server.serve",
+        "service.shutdown",
+    ]
+
+
+def test_application_shutdown_orders_server_before_service():
+    events = []
+    service = LifecycleService(events)
+    server = LifecycleServer(events)
+    application = make_lifecycle_application(service, server)
+
+    application.shutdown()
+    application.shutdown()
+
+    assert events == [
+        "server.shutdown",
+        "service.shutdown",
+        "server.shutdown",
+        "service.shutdown",
+    ]
 
 
 def test_cli_defaults_are_local_only_and_deterministic():

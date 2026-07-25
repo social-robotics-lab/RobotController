@@ -291,6 +291,10 @@ TCPフレーム処理とコマンドルーターの変更を必須としない�
 
 ネットワークスレッドはハードウェアを直接操作しない。すべてのハードウェアアクセスは、ネットワーク処理とは別の単一ワーカーを通して直列化する。
 
+初期段階のApplication Command Serviceは、検証済みコマンドを有界FIFOキューへ投入し、下位Targetを単一worker threadからだけ呼び出す。呼び出し元は下位Targetの完了まで同期的に待ち、結果または例外を受け取る。queue capacityは16、enqueue timeoutは1秒を初期実装値とし、設定で変更可能とする。
+
+この直列化層はMotionを逐次再生せず、stop優先、割込み、generationによる無効化およびキュー内MotionのキャンセルはMotion Schedulerで実装する。
+
 ## 8. 入力検証要件
 
 ### FR-030 フレーム長

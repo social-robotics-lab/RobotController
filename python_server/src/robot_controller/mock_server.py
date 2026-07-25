@@ -9,6 +9,7 @@ import sys
 import threading
 import typing
 
+from robot_controller.command_service import SerializedRobotCommandTarget
 from robot_controller.command_target import RecordingCommandTarget
 from robot_controller.profiles import (
     RobotProfile,
@@ -114,12 +115,23 @@ class LoggingRecordingCommandTarget(RecordingCommandTarget):
         )
         self._command_log_lock = threading.Lock()
         self._command_sequence = 0
+        self._command_thread_ids = []  # type: typing.List[int]
+
+    @property
+    def command_thread_ids(self):
+        # type: () -> typing.Tuple[int, ...]
+        """Return the worker thread identities that reached this target."""
+        with self._command_log_lock:
+            return tuple(self._command_thread_ids)
 
     def _record(self, command, payload):
         # type: (str, typing.Any) -> None
         with self._command_log_lock:
             self._command_sequence += 1
             sequence = self._command_sequence
+            self._command_thread_ids.append(
+                threading.current_thread().ident
+            )
             try:
                 RecordingCommandTarget._record(self, command, payload)
             finally:
@@ -133,13 +145,15 @@ class LoggingRecordingCommandTarget(RecordingCommandTarget):
 class MockApplication(object):
     """Composed hardware-free Mock Server application."""
 
-    def __init__(self, config, profile, target, router, server):
-        # type: (MockApplicationConfig, RobotProfile, LoggingRecordingCommandTarget, CommandRouter, LegacyV1TcpServer) -> None
+    def __init__(self, config, profile, target, service, router, server):
+        # type: (MockApplicationConfig, RobotProfile, LoggingRecordingCommandTarget, SerializedRobotCommandTarget, CommandRouter, LegacyV1TcpServer) -> None
         self._config = config
         self._profile = profile
         self._target = target
+        self._service = service
         self._router = router
         self._server = server
+        self._shutdown_lock = threading.Lock()
 
     @property
     def config(self):
@@ -157,6 +171,11 @@ class MockApplication(object):
         return self._target
 
     @property
+    def service(self):
+        # type: () -> SerializedRobotCommandTarget
+        return self._service
+
+    @property
     def router(self):
         # type: () -> CommandRouter
         return self._router
@@ -168,18 +187,28 @@ class MockApplication(object):
 
     def run(self):
         # type: () -> None
-        """Run the TCP server in the calling thread."""
-        self._server.serve_forever()
+        """Start the command worker before serving TCP in this thread."""
+        try:
+            self._service.start()
+            if not self._service.wait_until_ready():
+                raise RuntimeError(
+                    "Serialized command service failed to become ready"
+                )
+            self._server.serve_forever()
+        finally:
+            self._service.shutdown()
 
     def shutdown(self):
         # type: () -> None
-        """Request idempotent graceful TCP server shutdown."""
-        self._server.shutdown()
+        """Stop TCP work before draining and stopping the command worker."""
+        with self._shutdown_lock:
+            self._server.shutdown()
+            self._service.shutdown()
 
 
 def create_mock_application(config):
     # type: (MockApplicationConfig) -> MockApplication
-    """Build Profile, Recording Target, Router, then TCP Server."""
+    """Build Profile, Target, serialized service, Router, then TCP Server."""
     if not isinstance(config, MockApplicationConfig):
         raise TypeError("config must be MockApplicationConfig")
 
@@ -188,7 +217,8 @@ def create_mock_application(config):
         (name, 0) for name in sorted(profile.allowed_servo_names)
     )
     target = LoggingRecordingCommandTarget(initial_axes)
-    router = CommandRouter(target)
+    service = SerializedRobotCommandTarget(target)
+    router = CommandRouter(service)
 
     def log_listening(server):
         # type: (LegacyV1TcpServer) -> None
@@ -226,7 +256,14 @@ def create_mock_application(config):
         config=server_config,
         on_listening=log_listening,
     )
-    return MockApplication(config, profile, target, router, server)
+    return MockApplication(
+        config,
+        profile,
+        target,
+        service,
+        router,
+        server,
+    )
 
 
 def _port_argument(value):

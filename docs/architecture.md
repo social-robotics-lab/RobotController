@@ -278,6 +278,8 @@ read_axes         -> AxisService.read
 
 巨大な `if/elif` へ集中させず、コマンド定義表またはハンドラー登録方式を使用する。
 
+初期段階では、Routerが依存する`RobotCommandTarget`をApplication Command Serviceが実装する。複数のTCP workerはこのServiceの有界FIFOキューへ同期的にコマンドを投入し、下位Targetの完了まで待つ。下位Targetを呼ぶのはServiceが所有する単一worker threadだけとし、TCP workerから直接呼び出さない。
+
 ## 9. Motion Scheduler
 
 ### 9.1 目的
@@ -405,9 +407,11 @@ Close
 ### 11.3 キュー
 
 * 有界キューとする。
-* stopとcloseを優先できる構造にする。
-* 古いgenerationのコマンドを破棄する。
 * キュー満杯時の方針を明示する。
+
+初期段階のApplication Command Serviceはcapacity 16、enqueue timeout 1秒を変更可能な実装設定として持ち、FIFO順で処理する。公開メソッドは下位Targetの結果または例外が確定するまで同期的に待つ。
+
+stopとcloseの優先処理、古いgenerationの破棄、割込みおよびキュー内Motionのキャンセルは、次工程のMotion Schedulerと統合して実装する。初期段階のWorkerはMotion全体を下位Targetへ1回渡すだけで、Poseの逐次再生、補間、sleepまたはMotion完了待ちを行わない。
 
 ### 11.4 排他
 

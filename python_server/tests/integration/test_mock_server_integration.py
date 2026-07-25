@@ -164,6 +164,71 @@ def test_composed_mock_application_serves_stop_pose_and_read_axes(caplog):
     assert errors == []
     assert application.target.call_count("read_axes") == 1
     assert application.server.is_stopped is True
+    assert application.service.is_stopped is True
+    assert len(set(application.target.command_thread_ids)) == 1
+
+
+def test_multiple_tcp_clients_reach_target_only_on_single_worker():
+    application = create_mock_application(
+        MockApplicationConfig(
+            host="127.0.0.1",
+            port=0,
+            max_workers=4,
+            client_timeout_seconds=2.0,
+        )
+    )
+    errors = []
+    server_thread = threading.Thread(
+        target=_run_application,
+        args=(application, errors),
+    )
+    server_thread.start()
+    try:
+        assert application.server.wait_until_listening(5.0)
+        address = application.server.bound_address
+        start = threading.Barrier(5)
+        clients = []
+
+        def send_stop(command):
+            start.wait()
+            _send_legacy_request(address, command)
+
+        for command in (
+            "stop_wav",
+            "stop_pose",
+            "stop_motion",
+            "stop_idle_motion",
+        ):
+            client = threading.Thread(target=send_stop, args=(command,))
+            clients.append(client)
+            client.start()
+        start.wait()
+        for client in clients:
+            client.join(5.0)
+            assert not client.is_alive()
+
+        pose = b'{"Msec":0,"ServoMap":{"HEAD_Y":0}}'
+        motion = b'[{"Msec":0,"ServoMap":{"HEAD_Y":0}}]'
+        _send_legacy_request(address, "play_pose", pose)
+        _send_legacy_request(address, "play_motion", motion)
+        axes = _send_legacy_request(
+            address,
+            "read_axes",
+            response=True,
+        )
+        assert json.loads(axes.decode("utf-8"))["HEAD_Y"] == 0
+    finally:
+        application.shutdown()
+        server_thread.join(5.0)
+
+    assert errors == []
+    assert not server_thread.is_alive()
+    assert application.target.call_count("play_pose") == 1
+    assert application.target.call_count("play_motion") == 1
+    assert application.target.call_count("read_axes") == 1
+    assert len(application.target.command_thread_ids) == 7
+    assert len(set(application.target.command_thread_ids)) == 1
+    assert application.service.is_stopped
 
 
 @pytest.mark.skipif(

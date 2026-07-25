@@ -349,3 +349,78 @@ class CommandExecutionError(Exception):
         Exception.__init__(
             self, "Execution failed for command {0!r}".format(command)
         )
+
+
+class CommandServiceError(Exception):
+    """Base class for serialized command service failures."""
+
+
+class CommandServiceNotStartedError(CommandServiceError):
+    """A command was submitted before the service became ready."""
+
+    def __init__(self):
+        # type: () -> None
+        CommandServiceError.__init__(
+            self, "Serialized command service has not started"
+        )
+
+
+class CommandServiceStoppedError(CommandServiceError):
+    """A command was submitted while the service was stopping or stopped."""
+
+    def __init__(self):
+        # type: () -> None
+        CommandServiceError.__init__(
+            self, "Serialized command service is stopping or stopped"
+        )
+
+
+class CommandServiceAlreadyStartedError(CommandServiceError):
+    """A single-use command service received another start request."""
+
+    def __init__(self):
+        # type: () -> None
+        CommandServiceError.__init__(
+            self, "Serialized command service cannot be restarted"
+        )
+
+
+class CommandQueueFullError(CommandServiceError):
+    """The bounded command queue did not accept an item in time."""
+
+    def __init__(self, command, capacity):
+        # type: (str, int) -> None
+        self.command = command
+        self.capacity = capacity
+        CommandServiceError.__init__(
+            self,
+            (
+                "Command queue is full for {0!r}; configured capacity is {1}"
+            ).format(command, capacity),
+        )
+
+
+class CommandWorkerStoppedError(CommandServiceError):
+    """The single command worker stopped unexpectedly."""
+
+    def __init__(self, command=None):
+        # type: (typing.Optional[str]) -> None
+        self.command = command
+        CommandServiceError.__init__(
+            self,
+            "Serialized command worker stopped unexpectedly",
+        )
+
+
+class ReentrantCommandError(CommandServiceError):
+    """The command worker attempted to submit to its own service."""
+
+    def __init__(self, command):
+        # type: (str) -> None
+        self.command = command
+        CommandServiceError.__init__(
+            self,
+            "Reentrant serialized command call rejected for {0!r}".format(
+                command
+            ),
+        )
