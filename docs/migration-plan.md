@@ -183,6 +183,12 @@
 
 ## 9. フェーズ6：Sota低レベル読み取り
 
+このフェーズの前段として、`sota-backend-design.md`に実機Backendの安全境界を
+整理し、packet codec／transportの注入境界、fake transportおよびdry-run
+capability probeを用意する。確認済みpacket仕様がない間、probeは実deviceを
+openせず、read packetも送信しない。この前段作業はSota Backend実装または
+実機試験の完了を意味しない。
+
 ### 事前条件
 
 * 参照する非公式実装について、リポジトリURL、完全なcommit SHA、確認日、ライセンス、コピーか仕様参考による再実装か、およびレジスタ・ID・パケット・可動範囲の検証状態がReference baselinesへ記録されている。

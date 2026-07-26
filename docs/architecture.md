@@ -492,6 +492,12 @@ Mockはログを出すだけでなく、内部状態を更新して `read_axes` 
 
 Edison版Sotaの低レベル処理は専用モジュールに隔離する。
 
+実機Backend着手前の安全設計、未確定値、fail-closedなpacket codec境界、
+transport境界およびread-only probeは
+[`sota-backend-design.md`](sota-backend-design.md)に定義する。現段階のprobeは
+dry-runが既定であり、リポジトリ内に確認済みFutaba packet仕様がないため
+実deviceへの送信を行わない。このフェーズはSotaCommandTargetの実装ではない。
+
 想定される依存は次のとおり。
 
 * `/dev/i2c-1`
