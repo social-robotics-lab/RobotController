@@ -468,3 +468,98 @@ class MotionSchedulerWorkerStoppedError(MotionSchedulerError):
         MotionSchedulerError.__init__(
             self, "Motion Scheduler worker stopped unexpectedly"
         )
+
+
+class HardwareProbeError(Exception):
+    """Base class for isolated hardware capability-probe failures."""
+
+
+class UnsupportedHardwarePlatformError(HardwareProbeError):
+    """The requested real transport is unavailable on this platform."""
+
+
+class DeviceOpenError(HardwareProbeError):
+    """A transport could not open its explicitly configured device."""
+
+    def __init__(self, device):
+        # type: (str) -> None
+        self.device = device
+        HardwareProbeError.__init__(
+            self, "Could not open configured transport device"
+        )
+
+
+class TransportStateError(HardwareProbeError):
+    """A transport operation was attempted outside its open lifetime."""
+
+
+class TransportTimeoutError(HardwareProbeError):
+    """A bounded transport operation timed out."""
+
+    def __init__(self, operation):
+        # type: (str) -> None
+        self.operation = operation
+        HardwareProbeError.__init__(
+            self, "Transport {0} timed out".format(operation)
+        )
+
+
+class PartialResponseError(HardwareProbeError):
+    """A transport reached EOF before the requested response was complete."""
+
+    def __init__(self, expected_bytes, received_bytes):
+        # type: (int, int) -> None
+        self.expected_bytes = expected_bytes
+        self.received_bytes = received_bytes
+        HardwareProbeError.__init__(
+            self,
+            "Partial transport response: expected {0} bytes, received {1}".format(
+                expected_bytes, received_bytes
+            ),
+        )
+
+
+class InvalidFutabaPacketError(HardwareProbeError):
+    """A packet violates its explicitly supplied packet definition."""
+
+
+class FutabaChecksumMismatchError(InvalidFutabaPacketError):
+    """A packet checksum differs from the configured checksum function."""
+
+
+class UnexpectedServoIdError(InvalidFutabaPacketError):
+    """A response identifies a servo other than the requested servo."""
+
+    def __init__(self, expected_id, actual_id):
+        # type: (int, int) -> None
+        self.expected_id = expected_id
+        self.actual_id = actual_id
+        InvalidFutabaPacketError.__init__(
+            self,
+            "Unexpected servo ID: expected {0}, received {1}".format(
+                expected_id, actual_id
+            ),
+        )
+
+
+class UnsupportedServoModelError(HardwareProbeError):
+    """A responding servo model is not in the verified allowlist."""
+
+    def __init__(self, servo_id, model_identifier):
+        # type: (int, int) -> None
+        self.servo_id = servo_id
+        self.model_identifier = model_identifier
+        HardwareProbeError.__init__(
+            self,
+            "Servo {0} reported an unsupported model identifier".format(
+                servo_id
+            ),
+        )
+
+
+class UnsafeProbeOperationError(HardwareProbeError):
+    """A probe operation is not proven to be read-only."""
+
+
+class UnverifiedHardwareSpecificationError(HardwareProbeError):
+    """Required low-level values have no verified repository source."""
