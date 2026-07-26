@@ -268,6 +268,8 @@ TCPフレーム処理とコマンドルーターの変更を必須としない�
 * motion
 * idle motion
 
+Schedulerは`NONE`、`DIRECT_POSE`、`MOTION`、`IDLE_MOTION`を区別し、新しいplay系コマンドで既存の動作所有権を置換する。WAV操作と`read_axes`はこの所有権から独立する。
+
 ### FR-021 優先順位
 
 既定の優先順位を次のようにする。
@@ -287,13 +289,15 @@ TCPフレーム処理とコマンドルーターの変更を必須としない�
 
 停止または置換された古い世代のタスクは、その後ハードウェアへ指令を送れない。
 
+MotionはPose列として非同期に進行し、各Pose送信前後とinterruptible waitの前後でgenerationを確認する。`stop_motion`はgenerationとcancel Eventを無効化し、現在Poseの停止境界を下位Targetへ同期的に送った後に戻る。
+
 ### FR-023 ハードウェア直列化
 
 ネットワークスレッドはハードウェアを直接操作しない。すべてのハードウェアアクセスは、ネットワーク処理とは別の単一ワーカーを通して直列化する。
 
 初期段階のApplication Command Serviceは、検証済みコマンドを有界FIFOキューへ投入し、下位Targetを単一worker threadからだけ呼び出す。呼び出し元は下位Targetの完了まで同期的に待ち、結果または例外を受け取る。queue capacityは16、enqueue timeoutは1秒を初期実装値とし、設定で変更可能とする。
 
-この直列化層はMotionを逐次再生せず、stop優先、割込み、generationによる無効化およびキュー内MotionのキャンセルはMotion Schedulerで実装する。
+直列化層自体はMotionを逐次再生しない。上位Motion SchedulerがMotionをPoseへ展開し、内部Poseも同じ直列化層を通す。ソフトウェア補間と実機側の時間制御方式はBackend工程で決定する。
 
 ## 8. 入力検証要件
 

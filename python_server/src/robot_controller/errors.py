@@ -424,3 +424,47 @@ class ReentrantCommandError(CommandServiceError):
                 command
             ),
         )
+
+
+class MotionSchedulerError(Exception):
+    """Base class for Motion Scheduler lifecycle failures."""
+
+
+class MotionSchedulerNotStartedError(MotionSchedulerError):
+    """A command reached the Scheduler before it became ready."""
+
+    def __init__(self):
+        # type: () -> None
+        MotionSchedulerError.__init__(
+            self, "Motion Scheduler has not started"
+        )
+
+
+class MotionSchedulerStoppedError(MotionSchedulerError):
+    """A command reached a stopping or stopped Scheduler."""
+
+    def __init__(self):
+        # type: () -> None
+        MotionSchedulerError.__init__(
+            self, "Motion Scheduler is stopping or stopped"
+        )
+
+
+class MotionSchedulerAlreadyStartedError(MotionSchedulerError):
+    """A single-use Scheduler received another start request."""
+
+    def __init__(self):
+        # type: () -> None
+        MotionSchedulerError.__init__(
+            self, "Motion Scheduler cannot be restarted"
+        )
+
+
+class MotionSchedulerWorkerStoppedError(MotionSchedulerError):
+    """The Scheduler thread stopped unexpectedly."""
+
+    def __init__(self):
+        # type: () -> None
+        MotionSchedulerError.__init__(
+            self, "Motion Scheduler worker stopped unexpectedly"
+        )

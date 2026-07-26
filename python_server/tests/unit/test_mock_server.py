@@ -14,13 +14,16 @@ from robot_controller.command_target import RecordingCommandTarget
 from robot_controller.mock_server import (
     DEFAULT_MOCK_HOST,
     DEFAULT_MOCK_PROFILE,
+    LoggingCommandTarget,
     LoggingRecordingCommandTarget,
     MockApplication,
     MockApplicationConfig,
+    MockRecordingCommandTarget,
     create_mock_application,
     main,
     parse_arguments,
 )
+from robot_controller.motion_scheduler import MotionSchedulingCommandTarget
 from robot_controller.models import IdleMotionSettings, Motion, Pose
 from robot_controller.profiles import create_mock_robot_profile
 from robot_controller.protocol.legacy_v1 import LegacyV1Timeouts
@@ -83,11 +86,14 @@ def test_composition_builds_existing_layers_without_listening():
     assert isinstance(application.profile, type(create_mock_robot_profile()))
     assert isinstance(application.target, RecordingCommandTarget)
     assert isinstance(application.service, SerializedRobotCommandTarget)
+    assert isinstance(application.scheduler, MotionSchedulingCommandTarget)
+    assert isinstance(application.command_target, LoggingCommandTarget)
     assert isinstance(application.router, CommandRouter)
     assert isinstance(application.server, LegacyV1TcpServer)
     assert application.server.bound_address is None
     assert application.server.is_listening is False
     assert application.service.is_ready is False
+    assert application.scheduler.is_ready is False
     assert application.server.config.session_timeouts == LegacyV1Timeouts(
         5.0,
         5.0,
@@ -112,6 +118,8 @@ def test_composition_constructs_dependencies_in_documented_order(monkeypatch):
     profile = EmptyProfile()
     target = object()
     service = object()
+    scheduler = object()
+    command_target = object()
     router = object()
     server = object()
 
@@ -133,6 +141,16 @@ def test_composition_constructs_dependencies_in_documented_order(monkeypatch):
             order.append(("service", downstream))
             return service
 
+    class SchedulerFactory(object):
+        def __new__(cls, downstream, config=None, wait_strategy=None):
+            order.append(("scheduler", downstream))
+            return scheduler
+
+    class LoggingFactory(object):
+        def __new__(cls, downstream):
+            order.append(("logging", downstream))
+            return command_target
+
     class ServerFactory(object):
         def __new__(cls, **kwargs):
             order.append(
@@ -145,8 +163,14 @@ def test_composition_constructs_dependencies_in_documented_order(monkeypatch):
             return server
 
     monkeypatch.setattr(module, "create_mock_robot_profile", profile_factory)
-    monkeypatch.setattr(module, "LoggingRecordingCommandTarget", TargetFactory)
+    monkeypatch.setattr(module, "MockRecordingCommandTarget", TargetFactory)
     monkeypatch.setattr(module, "SerializedRobotCommandTarget", ServiceFactory)
+    monkeypatch.setattr(
+        module,
+        "MotionSchedulingCommandTarget",
+        SchedulerFactory,
+    )
+    monkeypatch.setattr(module, "LoggingCommandTarget", LoggingFactory)
     monkeypatch.setattr(module, "CommandRouter", RouterFactory)
     monkeypatch.setattr(module, "LegacyV1TcpServer", ServerFactory)
 
@@ -156,30 +180,39 @@ def test_composition_constructs_dependencies_in_documented_order(monkeypatch):
         "profile",
         ("target", {}),
         ("service", application.target),
-        ("router", application.service),
+        ("scheduler", application.service),
+        ("logging", application.scheduler),
+        ("router", application.command_target),
         ("server", profile, router),
     ]
     assert application.server is server
 
 
 class LifecycleService(object):
-    def __init__(self, events, start_error=None, ready=True):
+    def __init__(
+        self,
+        events,
+        start_error=None,
+        ready=True,
+        name="service",
+    ):
         self.events = events
         self.start_error = start_error
         self.ready = ready
+        self.name = name
         self.shutdown_calls = 0
 
     def start(self):
-        self.events.append("service.start")
+        self.events.append(self.name + ".start")
         if self.start_error is not None:
             raise self.start_error
 
     def wait_until_ready(self, timeout=None):
-        self.events.append("service.ready")
+        self.events.append(self.name + ".ready")
         return self.ready
 
     def shutdown(self):
-        self.events.append("service.shutdown")
+        self.events.append(self.name + ".shutdown")
         self.shutdown_calls += 1
 
 
@@ -199,7 +232,7 @@ class LifecycleServer(object):
         self.shutdown_calls += 1
 
 
-def make_lifecycle_application(service, server):
+def make_lifecycle_application(service, server, scheduler=None):
     return MockApplication(
         MockApplicationConfig(),
         object(),
@@ -207,21 +240,27 @@ def make_lifecycle_application(service, server):
         service,
         object(),
         server,
+        scheduler=scheduler,
+        command_target=object(),
     )
 
 
 def test_application_starts_service_and_waits_ready_before_server():
     events = []
     service = LifecycleService(events)
+    scheduler = LifecycleService(events, name="scheduler")
     server = LifecycleServer(events)
-    application = make_lifecycle_application(service, server)
+    application = make_lifecycle_application(service, server, scheduler)
 
     application.run()
 
     assert events == [
         "service.start",
         "service.ready",
+        "scheduler.start",
+        "scheduler.ready",
         "server.serve",
+        "scheduler.shutdown",
         "service.shutdown",
     ]
 
@@ -232,21 +271,51 @@ def test_service_start_failure_prevents_listen_and_stops_service():
         events,
         start_error=RuntimeError("start failed"),
     )
+    scheduler = LifecycleService(events, name="scheduler")
     server = LifecycleServer(events)
-    application = make_lifecycle_application(service, server)
+    application = make_lifecycle_application(service, server, scheduler)
 
     with pytest.raises(RuntimeError):
         application.run()
 
     assert "server.serve" not in events
-    assert events == ["service.start", "service.shutdown"]
+    assert events == [
+        "service.start",
+        "scheduler.shutdown",
+        "service.shutdown",
+    ]
+
+
+def test_scheduler_start_failure_prevents_listen_and_stops_layers():
+    events = []
+    service = LifecycleService(events)
+    scheduler = LifecycleService(
+        events,
+        start_error=RuntimeError("scheduler failed"),
+        name="scheduler",
+    )
+    server = LifecycleServer(events)
+    application = make_lifecycle_application(service, server, scheduler)
+
+    with pytest.raises(RuntimeError):
+        application.run()
+
+    assert "server.serve" not in events
+    assert events == [
+        "service.start",
+        "service.ready",
+        "scheduler.start",
+        "scheduler.shutdown",
+        "service.shutdown",
+    ]
 
 
 def test_server_failure_stops_service():
     events = []
     service = LifecycleService(events)
+    scheduler = LifecycleService(events, name="scheduler")
     server = LifecycleServer(events, OSError("bind failed"))
-    application = make_lifecycle_application(service, server)
+    application = make_lifecycle_application(service, server, scheduler)
 
     with pytest.raises(OSError):
         application.run()
@@ -254,7 +323,10 @@ def test_server_failure_stops_service():
     assert events == [
         "service.start",
         "service.ready",
+        "scheduler.start",
+        "scheduler.ready",
         "server.serve",
+        "scheduler.shutdown",
         "service.shutdown",
     ]
 
@@ -262,16 +334,19 @@ def test_server_failure_stops_service():
 def test_application_shutdown_orders_server_before_service():
     events = []
     service = LifecycleService(events)
+    scheduler = LifecycleService(events, name="scheduler")
     server = LifecycleServer(events)
-    application = make_lifecycle_application(service, server)
+    application = make_lifecycle_application(service, server, scheduler)
 
     application.shutdown()
     application.shutdown()
 
     assert events == [
         "server.shutdown",
+        "scheduler.shutdown",
         "service.shutdown",
         "server.shutdown",
+        "scheduler.shutdown",
         "service.shutdown",
     ]
 
@@ -400,6 +475,95 @@ def test_logging_target_records_models_and_logs_only_command_and_sequence(
         target.commands
     )
     assert [record.args[1] for record in caplog.records] == list(
+        range(1, 10)
+    )
+    assert "secret-wave-payload" not in caplog.text
+    assert "servo_positions" not in caplog.text
+
+
+def test_external_logging_decorator_does_not_log_internal_motion_poses(
+    caplog,
+):
+    target = MockRecordingCommandTarget({"HEAD_Y": 0})
+    service = SerializedRobotCommandTarget(target)
+    scheduler = MotionSchedulingCommandTarget(service)
+    logging_target = LoggingCommandTarget(scheduler)
+    motion = Motion([Pose(0, {"HEAD_Y": 1}, {}) for unused in range(3)])
+    service.start()
+    assert service.wait_until_ready(2.0)
+    scheduler.start()
+    assert scheduler.wait_until_ready(2.0)
+    try:
+        with caplog.at_level(
+            logging.INFO,
+            logger="robot_controller.mock_server",
+        ):
+            logging_target.play_motion(motion)
+            assert scheduler.wait_until_state("NONE", 2.0)
+    finally:
+        scheduler.shutdown()
+        service.shutdown()
+
+    command_records = [
+        record
+        for record in caplog.records
+        if record.getMessage().startswith("Mock command")
+    ]
+    assert len(command_records) == 1
+    assert command_records[0].args == ("play_motion", 1)
+    assert target.call_count("play_pose") == 3
+    assert "servo_positions" not in caplog.text
+
+
+def test_composed_logging_decorator_logs_each_external_command_once(caplog):
+    target = MockRecordingCommandTarget({"HEAD_Y": 0})
+    service = SerializedRobotCommandTarget(target)
+    scheduler = MotionSchedulingCommandTarget(service)
+    logging_target = LoggingCommandTarget(scheduler)
+    direct = Pose(0, {"HEAD_Y": 1}, {})
+    motion = Motion([Pose(0, {"HEAD_Y": 2}, {})])
+    settings = IdleMotionSettings(1.0, 1000)
+    secret_wav = b"secret-wave-payload"
+    service.start()
+    assert service.wait_until_ready(2.0)
+    scheduler.start()
+    assert scheduler.wait_until_ready(2.0)
+    try:
+        with caplog.at_level(
+            logging.INFO,
+            logger="robot_controller.mock_server",
+        ):
+            logging_target.play_wav(secret_wav)
+            logging_target.stop_wav()
+            logging_target.play_pose(direct)
+            logging_target.stop_pose()
+            logging_target.play_motion(motion)
+            assert scheduler.wait_until_state("NONE", 2.0)
+            logging_target.stop_motion()
+            logging_target.play_idle_motion(settings)
+            logging_target.stop_idle_motion()
+            assert logging_target.read_axes() == {"HEAD_Y": 0}
+    finally:
+        scheduler.shutdown()
+        service.shutdown()
+
+    command_records = [
+        record
+        for record in caplog.records
+        if record.getMessage().startswith("Mock command")
+    ]
+    assert [record.args[0] for record in command_records] == [
+        "play_wav",
+        "stop_wav",
+        "play_pose",
+        "stop_pose",
+        "play_motion",
+        "stop_motion",
+        "play_idle_motion",
+        "stop_idle_motion",
+        "read_axes",
+    ]
+    assert [record.args[1] for record in command_records] == list(
         range(1, 10)
     )
     assert "secret-wave-payload" not in caplog.text

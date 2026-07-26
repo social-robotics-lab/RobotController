@@ -134,7 +134,7 @@ def test_composed_mock_application_serves_stop_pose_and_read_axes(caplog):
         finally:
             stop_client.close()
 
-        assert application.target.call_count("stop_pose") == 1
+        assert application.target.call_count("stop_pose") == 0
 
         axes_client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         axes_client.settimeout(3.0)
@@ -164,6 +164,7 @@ def test_composed_mock_application_serves_stop_pose_and_read_axes(caplog):
     assert errors == []
     assert application.target.call_count("read_axes") == 1
     assert application.server.is_stopped is True
+    assert application.scheduler.is_stopped is True
     assert application.service.is_stopped is True
     assert len(set(application.target.command_thread_ids)) == 1
 
@@ -223,11 +224,100 @@ def test_multiple_tcp_clients_reach_target_only_on_single_worker():
 
     assert errors == []
     assert not server_thread.is_alive()
-    assert application.target.call_count("play_pose") == 1
-    assert application.target.call_count("play_motion") == 1
+    assert application.target.call_count("play_pose") == 2
+    assert application.target.call_count("play_motion") == 0
     assert application.target.call_count("read_axes") == 1
-    assert len(application.target.command_thread_ids) == 7
+    assert len(application.target.command_thread_ids) == 4
     assert len(set(application.target.command_thread_ids)) == 1
+    assert application.scheduler.is_stopped
+    assert application.service.is_stopped
+
+
+def test_tcp_motion_stop_replacement_modes_and_independent_commands():
+    application = create_mock_application(
+        MockApplicationConfig(
+            host="127.0.0.1",
+            port=0,
+            max_workers=4,
+            client_timeout_seconds=2.0,
+        )
+    )
+    errors = []
+    server_thread = threading.Thread(
+        target=_run_application,
+        args=(application, errors),
+    )
+    server_thread.start()
+    try:
+        assert application.server.wait_until_listening(5.0)
+        address = application.server.bound_address
+
+        motion_a = (
+            b'[{"Msec":60000,"ServoMap":{"HEAD_Y":1}},'
+            b'{"Msec":0,"ServoMap":{"HEAD_Y":2}}]'
+        )
+        _send_legacy_request(address, "play_motion", motion_a)
+        assert application.target.wait_for_call_count(
+            "play_pose", 1, 2.0
+        )
+        _send_legacy_request(address, "stop_motion")
+        assert application.target.call_count("play_pose") == 1
+        assert application.target.call_count("stop_pose") == 1
+
+        _send_legacy_request(address, "play_motion", motion_a)
+        assert application.target.wait_for_call_count(
+            "play_pose", 2, 2.0
+        )
+        motion_b = (
+            b'[{"Msec":0,"ServoMap":{"HEAD_Y":10}}]'
+        )
+        _send_legacy_request(address, "play_motion", motion_b)
+        assert application.target.wait_for_call_count(
+            "play_pose", 3, 2.0
+        )
+
+        _send_legacy_request(address, "play_motion", motion_a)
+        assert application.target.wait_for_call_count(
+            "play_pose", 4, 2.0
+        )
+        direct = b'{"Msec":0,"ServoMap":{"HEAD_Y":99}}'
+        _send_legacy_request(address, "play_pose", direct)
+        assert application.target.wait_for_call_count(
+            "play_pose", 5, 2.0
+        )
+
+        _send_legacy_request(
+            address,
+            "play_idle_motion",
+            b'{"Speed":1.0,"Pause":1000}',
+        )
+        _send_legacy_request(address, "stop_idle_motion")
+        _send_legacy_request(address, "play_wav", b"opaque-wav")
+        _send_legacy_request(address, "stop_wav")
+        axes = _send_legacy_request(
+            address,
+            "read_axes",
+            response=True,
+        )
+
+        positions = [
+            call.payload.servo_positions["HEAD_Y"]
+            for call in application.target.calls
+            if call.command == "play_pose"
+        ]
+        assert positions == [1, 1, 10, 1, 99]
+        assert application.target.call_count("play_idle_motion") == 1
+        assert application.target.call_count("stop_idle_motion") == 1
+        assert application.target.call_count("play_wav") == 1
+        assert application.target.call_count("stop_wav") == 1
+        assert json.loads(axes.decode("utf-8"))["HEAD_Y"] == 0
+    finally:
+        application.shutdown()
+        server_thread.join(5.0)
+
+    assert errors == []
+    assert not server_thread.is_alive()
+    assert application.scheduler.is_stopped
     assert application.service.is_stopped
 
 

@@ -341,6 +341,14 @@ Schedulerは単調増加するgenerationを持つ。
 
 無条件のトルクOFFは共通処理に含めない。
 
+### 9.7 初期Scheduler実装
+
+Schedulerは`RobotCommandTarget`としてRouterの下に配置し、そのdownstreamを`SerializedRobotCommandTarget`とする。Mock構成はRecording Target、Serialized Target、Motion Scheduler、外部コマンド専用Logging Decorator、Routerの順に組み立てる。TCP workerはSchedulerを並行して呼べるが、実際の下位Target呼び出しは引き続き単一command workerだけが行う。
+
+`play_motion`はMotionを1件だけactiveとして登録した時点で戻る。専用Scheduler threadはPoseを入力順に1回ずつ送信し、`duration_ms / 1000.0`をcancel Eventでinterruptibleに待つ。新しいMotion、Direct Pose、Idle Motionまたは停止要求はgenerationを進めて古い処理を無効化する。各下位Pose送信前後、wait後、完了状態更新前にgenerationを再確認し、古いMotionが新しい状態を`NONE`へ戻すことを防ぐ。
+
+`stop_motion`はactive generationを無効化して待機を解除し、進行中の下位Pose送信が完了したことを確認してから`stop_pose`を直列化層へ送る。このため、`stop_motion`が戻った後に停止対象generationの残りPoseは送信されない。Idle MotionのPose生成、stopの優先キュー、サーボ補間および実機の遷移時間実現方式はこのSchedulerの責務に含めない。
+
 ## 10. 補間
 
 ### 10.1 共通方針
@@ -409,9 +417,9 @@ Close
 * 有界キューとする。
 * キュー満杯時の方針を明示する。
 
-初期段階のApplication Command Serviceはcapacity 16、enqueue timeout 1秒を変更可能な実装設定として持ち、FIFO順で処理する。公開メソッドは下位Targetの結果または例外が確定するまで同期的に待つ。
+Application Command Serviceはcapacity 16、enqueue timeout 1秒を変更可能な実装設定として持ち、FIFO順で処理する。公開メソッドは下位Targetの結果または例外が確定するまで同期的に待つ。
 
-stopとcloseの優先処理、古いgenerationの破棄、割込みおよびキュー内Motionのキャンセルは、次工程のMotion Schedulerと統合して実装する。初期段階のWorkerはMotion全体を下位Targetへ1回渡すだけで、Poseの逐次再生、補間、sleepまたはMotion完了待ちを行わない。
+上位Motion Schedulerが古いgenerationの無効化、interruptible waitおよびMotionのPose展開を担当する。Serialized WorkerはMotion Schedulerから渡された各PoseをFIFOで1回実行するだけで、補間、sleepまたはMotion全体の完了待ちを行わない。stop専用の優先キューとキュー内項目削除は実装しない。
 
 ### 11.4 排他
 

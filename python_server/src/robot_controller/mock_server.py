@@ -10,7 +10,12 @@ import threading
 import typing
 
 from robot_controller.command_service import SerializedRobotCommandTarget
-from robot_controller.command_target import RecordingCommandTarget
+from robot_controller.command_target import (
+    RecordingCommandTarget,
+    RobotCommandTarget,
+)
+from robot_controller.motion_scheduler import MotionSchedulingCommandTarget
+from robot_controller.models import IdleMotionSettings, Motion, Pose
 from robot_controller.profiles import (
     RobotProfile,
     create_mock_robot_profile,
@@ -142,15 +147,132 @@ class LoggingRecordingCommandTarget(RecordingCommandTarget):
                 )
 
 
+class MockRecordingCommandTarget(RecordingCommandTarget):
+    """Recording Target with payload-free worker thread diagnostics."""
+
+    def __init__(self, read_axes_result=None, exceptions=None):
+        # type: (typing.Optional[typing.Mapping[str, int]], typing.Optional[typing.Mapping[str, BaseException]]) -> None
+        RecordingCommandTarget.__init__(
+            self,
+            read_axes_result=read_axes_result,
+            exceptions=exceptions,
+        )
+        self._record_condition = threading.Condition()
+        self._command_thread_ids = []  # type: typing.List[int]
+
+    @property
+    def command_thread_ids(self):
+        # type: () -> typing.Tuple[int, ...]
+        with self._record_condition:
+            return tuple(self._command_thread_ids)
+
+    def wait_for_call_count(self, command, count, timeout=None):
+        # type: (str, int, typing.Optional[float]) -> bool
+        """Wait deterministically until a lower-layer call is recorded."""
+        with self._record_condition:
+            return self._record_condition.wait_for(
+                lambda: self.call_count(command) >= count,
+                timeout,
+            )
+
+    def _record(self, command, payload):
+        # type: (str, typing.Any) -> None
+        with self._record_condition:
+            self._command_thread_ids.append(
+                threading.current_thread().ident
+            )
+            try:
+                RecordingCommandTarget._record(self, command, payload)
+            finally:
+                self._record_condition.notify_all()
+
+
+class LoggingCommandTarget(RobotCommandTarget):
+    """Log only externally received command identity, never payload content."""
+
+    def __init__(self, downstream):
+        # type: (RobotCommandTarget) -> None
+        if not isinstance(downstream, RobotCommandTarget):
+            raise TypeError("downstream must implement RobotCommandTarget")
+        self._downstream = downstream
+        self._lock = threading.Lock()
+        self._sequence = 0
+
+    def play_wav(self, wav_data):
+        # type: (bytes) -> None
+        return self._invoke("play_wav", wav_data, True)
+
+    def stop_wav(self):
+        # type: () -> None
+        return self._invoke("stop_wav", None, False)
+
+    def play_pose(self, pose):
+        # type: (Pose) -> None
+        return self._invoke("play_pose", pose, True)
+
+    def stop_pose(self):
+        # type: () -> None
+        return self._invoke("stop_pose", None, False)
+
+    def play_motion(self, motion):
+        # type: (Motion) -> None
+        return self._invoke("play_motion", motion, True)
+
+    def stop_motion(self):
+        # type: () -> None
+        return self._invoke("stop_motion", None, False)
+
+    def play_idle_motion(self, settings):
+        # type: (IdleMotionSettings) -> None
+        return self._invoke("play_idle_motion", settings, True)
+
+    def stop_idle_motion(self):
+        # type: () -> None
+        return self._invoke("stop_idle_motion", None, False)
+
+    def read_axes(self):
+        # type: () -> typing.Mapping[str, int]
+        return self._invoke("read_axes", None, False)
+
+    def _invoke(self, command, payload, has_payload):
+        # type: (str, typing.Any, bool) -> typing.Any
+        with self._lock:
+            self._sequence += 1
+            sequence = self._sequence
+        try:
+            method = getattr(self._downstream, command)
+            if has_payload:
+                return method(payload)
+            return method()
+        finally:
+            logger.info(
+                "Mock command command=%s sequence=%d",
+                command,
+                sequence,
+            )
+
+
 class MockApplication(object):
     """Composed hardware-free Mock Server application."""
 
-    def __init__(self, config, profile, target, service, router, server):
-        # type: (MockApplicationConfig, RobotProfile, LoggingRecordingCommandTarget, SerializedRobotCommandTarget, CommandRouter, LegacyV1TcpServer) -> None
+    def __init__(
+        self,
+        config,
+        profile,
+        target,
+        service,
+        router,
+        server,
+        scheduler=None,
+        command_target=None,
+    ):
+        # type: (MockApplicationConfig, RobotProfile, RecordingCommandTarget, SerializedRobotCommandTarget, CommandRouter, LegacyV1TcpServer, typing.Optional[MotionSchedulingCommandTarget], typing.Optional[RobotCommandTarget]) -> None
         self._config = config
         self._profile = profile
         self._target = target
         self._service = service
+        self._scheduler = scheduler
+        self._command_target = command_target
         self._router = router
         self._server = server
         self._shutdown_lock = threading.Lock()
@@ -176,6 +298,16 @@ class MockApplication(object):
         return self._service
 
     @property
+    def scheduler(self):
+        # type: () -> typing.Optional[MotionSchedulingCommandTarget]
+        return self._scheduler
+
+    @property
+    def command_target(self):
+        # type: () -> typing.Optional[RobotCommandTarget]
+        return self._command_target
+
+    @property
     def router(self):
         # type: () -> CommandRouter
         return self._router
@@ -194,8 +326,16 @@ class MockApplication(object):
                 raise RuntimeError(
                     "Serialized command service failed to become ready"
                 )
+            if self._scheduler is not None:
+                self._scheduler.start()
+                if not self._scheduler.wait_until_ready():
+                    raise RuntimeError(
+                        "Motion Scheduler failed to become ready"
+                    )
             self._server.serve_forever()
         finally:
+            if self._scheduler is not None:
+                self._scheduler.shutdown()
             self._service.shutdown()
 
     def shutdown(self):
@@ -203,6 +343,8 @@ class MockApplication(object):
         """Stop TCP work before draining and stopping the command worker."""
         with self._shutdown_lock:
             self._server.shutdown()
+            if self._scheduler is not None:
+                self._scheduler.shutdown()
             self._service.shutdown()
 
 
@@ -216,9 +358,11 @@ def create_mock_application(config):
     initial_axes = dict(
         (name, 0) for name in sorted(profile.allowed_servo_names)
     )
-    target = LoggingRecordingCommandTarget(initial_axes)
+    target = MockRecordingCommandTarget(initial_axes)
     service = SerializedRobotCommandTarget(target)
-    router = CommandRouter(service)
+    scheduler = MotionSchedulingCommandTarget(service)
+    command_target = LoggingCommandTarget(scheduler)
+    router = CommandRouter(command_target)
 
     def log_listening(server):
         # type: (LegacyV1TcpServer) -> None
@@ -263,6 +407,8 @@ def create_mock_application(config):
         service,
         router,
         server,
+        scheduler=scheduler,
+        command_target=command_target,
     )
 
 
