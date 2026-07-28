@@ -58,18 +58,22 @@ The Python implementation is under `python_server/` and targets CPython
 
 The Sota standard-backend foundation communicates with the existing
 `vsmd_edison` daemon at `127.0.0.1:6498`; it does not open Futaba UART or I2C
-devices directly. A human operator may run the confirmed read-only probe on a
-Sota as follows:
+devices directly. On 2026-07-28, the read-only probe completed successfully
+from Windows 11 / Python 3.14.3 through an SSH local port forward to the Intel
+Edison. A human operator may run it as follows:
 
-```text
-cd python_server
-python -m robot_controller.hardware.vsmd.probe
+```powershell
+cd C:\Users\tiio\Workspace\RobotController\python_server
+py -3.14 -m robot_controller.hardware.vsmd.probe
 ```
 
 The probe connects and reads the server banner, mouth selector, AudioDiff,
 mouth interpolation Target/Output, and ServoReadPos. It has no memory-write
 option. Automated agents and automated tests must not run it against a real
-robot.
+robot. The successful trial sent no VSMD write request and caused no observed
+servo or LED state change. It does not enable production mouth-LED control or
+connect `VsmdSotaCommandTarget` to the default Composition Root; Mock remains
+the default Backend.
 
 The VSMD memory-write line was verified from a PCAP capture of
 `sotalib.jar`. It uses one ASCII space between every field:
@@ -92,6 +96,7 @@ address mismatches.
 The production mouth-LED path is intentionally unavailable until the exact
 `InterpLockerClient` protocol is verified. Existing Futaba direct-control
 code remains isolated for experiments and is not the standard Sota Backend.
-See `docs/sota-backend-design.md` for verified facts, static-analysis findings,
-and unresolved items.
+See `docs/sota-backend-design.md` for the trial record and current completion
+boundary, and `docs/protocol-compatibility.md` for the measured wire protocol
+and memory values.
 

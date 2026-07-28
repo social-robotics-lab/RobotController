@@ -508,6 +508,25 @@ read-only probe、口LEDドメインモデルは`hardware/vsmd/`へ隔離する�
 確認済み事項、静的解析による確認、未確認事項は
 [`sota-backend-design.md`](sota-backend-design.md)に定義する。
 
+2026-07-28、次の接続構成でread-only経路を実機確認した。
+
+```text
+Windows 11 / Python 3.14.3
+→ 127.0.0.1:6498
+→ SSH local port forwarding
+→ Intel Edison 127.0.0.1:6498
+→ vsmd_edison
+```
+
+この試験ではbanner、selector、AudioDiff、`InterpLEDTarget[14]`、
+`InterpLEDOutput[14]`、`ServoReadPos` 32要素を読み取り、Codec、Transport、
+byte/typed memory、memory map、probeまでのread-only層がSSH tunnel越しにも
+動作することを確認した。VSMD writeは送信しておらず、servoまたはLEDの状態変化も
+観測されなかった。これは`VsmdSotaCommandTarget`の統合やproduction writeの
+検証ではない。既定Composition Rootは引き続きMockである。実測値と実行記録は
+[`protocol-compatibility.md`](protocol-compatibility.md)および
+[`sota-backend-design.md`](sota-backend-design.md)に集約する。
+
 実機上の`sotalib.jar`通信をPCAPで確認したVSMD write形式は
 `w 0124 9c 0c\r\n`のようにcommand、4桁lower-case hexadecimal address、
 各2桁lower-case hexadecimal byteをASCII space 1個で区切る。Codecはこの

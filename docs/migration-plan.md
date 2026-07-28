@@ -186,8 +186,20 @@
 Sota標準Backend候補は、UARTやI2Cへ直接アクセスせず、既存の
 `vsmd_edison`へTCP `127.0.0.1:6498`で接続する。確認済みprotocolのcodec、
 buffer付きTCP Transport、byte/typed memory、Sota memory mapおよび
-read-only probeを先に独立完成させる。この前段作業は
-`VsmdSotaCommandTarget`または実機試験の完了を意味しない。
+read-only probeを先に独立完成させる。2026-07-28にWindows 11 /
+Python 3.14.3からSSH local port forwarding経由でread-only probeの実機確認を
+完了した。この完了は`VsmdSotaCommandTarget`統合またはproduction writeの完了を
+意味しない。
+
+### 現在の検証状態
+
+* [x] Codec、buffer付きTCP Transport、byte/typed memory、確認済みmemory mapを実装
+* [x] read-only probeでbanner、selector、AudioDiff、Target/Output、ServoReadPosを実機確認
+* [x] probeがVSMD writeを送信せず、servo/LED状態を変更しないことを試験時に確認
+* [ ] VSMDの最大read sizeを確認
+* [ ] `InterpLockerClient` protocolと異常時を含むlock lifecycleを確認
+* [ ] Pythonからのproduction LED writeを安全に検証
+* [ ] `VsmdSotaCommandTarget`をComposition Rootへ統合
 
 ### 事前条件
 

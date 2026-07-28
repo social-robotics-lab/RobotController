@@ -31,13 +31,50 @@ Fake lockで試験可能な口LEDドメインモデルである。`VsmdSotaComma
 
 2026-07-28までの人手による実機調査で次を確認した。
 
+#### read-only probe実機試験
+
+Windows 11上のPython 3.14.3からSSH local port forwardingを使用し、Intel Edison上の
+`vsmd_edison`へ次の経路で接続した。
+
+```text
+Windows Python 3.14.3
+→ 127.0.0.1:6498
+→ SSH local port forwarding
+→ Intel Edison 127.0.0.1:6498
+→ vsmd_edison
+```
+
+実行コマンドと結果は次のとおりである。
+
+```powershell
+cd C:\Users\tiio\Workspace\RobotController\python_server
+py -3.14 -m robot_controller.hardware.vsmd.probe
+```
+
+```text
+READ-ONLY VSMD probe: endpoint=127.0.0.1:6498 connect_timeout=1.0 read_timeout=1.0 write_timeout=1.0
+server_banner=#vs-rc020 (Oct 31 2018 14:44:11)
+mouth_selector address=292 value=138
+AudioDiff address=138 value=0
+InterpLEDTarget[14] address=2716 value=0
+InterpLEDOutput[14] address=3228 value=0
+ServoReadPos base=3712 length=32 values=0,5,-899,0,904,2,-2,-8,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+```
+
+この試験で、接続とbanner、read Codec/Transport、byte/typed memory、確認済み
+memory map、read-only probeまでの層が動作した。`ServoReadPos`は64 bytes
+（wire size `40`）から32個のsigned little-endian S16として復号できた。上記の
+個別値は姿勢や時刻で変化するためgolden vectorにはしない。
+
+probeはread requestだけを送り、VSMD write requestを送信しなかった。試験中に
+servoまたはLEDの状態変化は発生せず、`vsmd_edison`、SotaAppManager、device fileへ
+変更を加えていない。
+
 * `vsmd_edison`はTCP `127.0.0.1:6498`で待ち受ける。
 * 接続直後に`#vs-`で始まる改行終端bannerを返す。
 * read requestは`R {address:04x} {size_hex}\r\n`である。
 * read responseは`#{address:04x} {byte:02x} ... \r\n`であり、最後のbyte後に
   ASCII spaceが1個入る場合がある。
-* write requestは`w 0124 9c 0c\r\n`のようにcommand、address、各byteを
-  ASCII space 1個で区切り、応答を待たない。
 * typed値はlittle-endianである。
 * Sotaの口LEDはglobal LED ID 14であり、2番目のLED driverではlocal index 6。
 * `InterpLEDOutput[14]`は`3200 + 14 * 2 = 3228`である。
@@ -61,6 +98,8 @@ LED14_LOCK_RELEASED=true
 ```
 
 復元後、短いWAVに対する口LED音声同期も正常であった。
+
+### 2.2 Java bytecodeまたはPCAP解析で確認済み
 
 同じPCAPで次のwrite列を確認した。これは実測済みbyte列である。
 
@@ -89,8 +128,6 @@ captureから各writeの対応は確認できるが、TriggerPointerの割当規
 timer addressの排他・所有権、lock protocolは未確認である。この観測だけから
 Python版production lockを実装しない。
 
-### 2.2 リポジトリの静的解析で確認
-
 * Java版は`CRobotMem`と`CSotaMotion`を利用する。
 * Java版の公開口LED IDは14である。
 * 現在のPython構成は
@@ -106,6 +143,12 @@ Python版production lockを実装しない。
 * lockのlease、再入、切断時解放、stale owner処理。
 * servo/LEDの全memory fieldの意味と更新順序。
 * write送信後のdaemon内部適用時点。したがって失敗したwriteは自動再送しない。
+* lock keyからtimer addressへの割当規則と、ロック競合時の応答。
+* 異常終了時のロック解放。
+* Pythonからの安全なproduction LED write。
+* `VsmdSotaCommandTarget`の完全統合。
+* VSMDが許容する最大read size。
+* 全responseで末尾ASCII spaceが必ず付くかどうか。
 
 未確認値を推測したproduction fallbackは作らない。
 
@@ -196,11 +239,12 @@ fail-closedにする。`close()`は冪等である。
 
 ## 8. read-only probe
 
-人間が実機で手動実行する場合だけ、次を使用する。
+人間が実機で手動実行する場合だけ、次を使用する。2026-07-28にはWindows 11 /
+Python 3.14.3からSSH tunnel経由でこのコマンドが成功した。
 
 ```powershell
-cd python_server
-python -m robot_controller.hardware.vsmd.probe
+cd C:\Users\tiio\Workspace\RobotController\python_server
+py -3.14 -m robot_controller.hardware.vsmd.probe
 ```
 
 このprobeはbanner、接続先、timeout、selector、AudioDiff、Target[14]、
@@ -210,12 +254,29 @@ memory write APIや`--write`、`--execute`、`--disable-voice-sync`、
 
 Codexを含む自動エージェントは実機で実行しない。
 
+### 検証済みテスト環境
+
+実機probeと同時点で記録されたテスト結果は次のとおりである。
+
+| 環境 | 結果 |
+| --- | --- |
+| Windows Python 3.14.3 | `693 passed` |
+| Windows Python 3.6.8 | `693 passed` |
+| `python:3.6.15-buster`、Python 3.6.15、pytest 6.2.5 | `691 passed, 2 skipped` |
+
+Docker環境では`python -m compileall -q src`も成功した。2件のskip理由はこの記録では
+確認していないため、結果値のみを記載する。
+
 ## 9. hardware safety
 
 `vsmd_edison`を停止・disable・再起動しない。`/dev/ttyMFD1`、
 `/dev/i2c-1`、GPIO、`/dev/shm/vsmd_mem`へPythonから直接writeしない。
 probeはmemory readだけに限定し、servo、LED、torque、初期Poseを変更しない。
 自動テストはsocket stubとFake memory/lock/timerだけを使う。
+
+`UnavailableVsmdLedLock`のfail-closed動作は維持し、Python版production口LED制御は
+有効化しない。`VsmdSotaCommandTarget`は既定Composition Rootへ接続せず、既定
+BackendはMockのままとする。
 
 実機でのread-only probeは人間が内容を確認して手動実行する。実機write試験は
 lock protocol、復元順、低輝度・短時間の試験手順を別途レビューした後に限り、

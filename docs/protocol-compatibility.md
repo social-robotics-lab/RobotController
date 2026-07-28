@@ -471,39 +471,63 @@ v2は、既存v1クライアントが誤ってv2応答を受け取らない方�
 ### 18.0 確認済み`vsmd_edison` protocol
 
 この節はRobotControllerの外部legacy v1ではなく、Sota Backend内部で利用する
-localhost protocolを記録する。2026-07-28までの人手による実機調査で確認済み。
+localhost protocolを記録する。実機probe、Java bytecode/PCAP解析、未確認事項を
+小節内で区別する。
+
+#### 18.0.1 read-only probeによる実機確認
+
+Windows 11 / Python 3.14.3からSSH local port forwardingを経由し、Intel Edison上の
+`127.0.0.1:6498`で待ち受ける`vsmd_edison`へ接続した。接続直後の改行終端bannerは
+次のとおりで、Python実装はSSH tunnel越しにも正常に読み取った。
 
 ```text
-endpoint: 127.0.0.1:6498
-banner:   #vs-...\r\n
-read:     R {address:04x} {size_hex}\r\n
-response: #{address:04x} {byte0:02x} ... \r\n
+#vs-rc020 (Oct 31 2018 14:44:11)
+```
+
+read requestのsizeはPython API上ではbyte数を表す整数だが、wire上ではlower-case
+hexadecimalである。実機で次を確認した。
+
+```text
+R 0124 2   → 2 bytes
+R 0e80 40  → 64 bytes
+R 0e80 64  → 100 bytes
+```
+
+したがって64 bytesの要求は`R 0e80 40\r\n`であり、`R 0e80 64\r\n`ではない。
+実機responseでは`#0124 8a 00 \r\n`のように最後のbyteとCRLFの間へASCII spaceが
+入った。確認済みの互換範囲としてCodecは末尾space 0個または1個を許容するが、
+行頭space、byte間の連続space、tab、末尾space 2個以上、byte不足・過剰、
+address不一致、2桁でないhex tokenは拒否する。全responseに末尾spaceが必ず付くかは
+未確認である。
+
+同じread-only probeで確認したaddressとその時点の値は次のとおりである。
+
+| 項目 | address | 実測値 |
+| --- | ---: | ---: |
+| `MOUTH_LED_SELECTOR_ADDRESS` | 292 | 138 |
+| `AUDIO_DIFF_VALUE_ADDRESS` | 138 | 0 |
+| `InterpLEDTarget[14]` | 2716 | 0 |
+| `InterpLEDOutput[14]` | 3228 | 0 |
+
+address計算`2688 + 14 * 2 = 2716`および`3200 + 14 * 2 = 3228`も、probeが
+読み取ったTarget/Output addressと一致した。`ServoReadPos`はbase address 3712から
+32個のsigned little-endian S16として正常に取得・復号した。wire上のread sizeは
+64 bytes、つまり`40`である。個々の値は姿勢や時刻で変わるため、固定仕様や
+golden vectorにはしない。
+
+この項の接続、banner、read wire、addressおよびread値は「実機で確認済み」である。
+後述のwrite列はJava版`sotalib.jar`のPCAP解析で確認済みであり、根拠を区別する。
+
+#### 18.0.2 Java版`sotalib.jar`のPCAP解析で確認済み
+
+```text
 write:    w {address:04x} {byte0:02x} {byte1:02x} ...\r\n
 ```
 
 write形式は実機上の`sotalib.jar`通信をPCAPで確認した。先頭はlower-case `w`、
 command、4桁lower-case hexadecimal address、各2桁lower-case hexadecimal
 payload byteの間はASCII spaceちょうど1個、終端はCRLFである。write responseは
-待たない。typed値はlittle-endian。responseの改行、address、各2桁hex token、
-要求byte数を厳密に検証する。TCP packet境界はline境界ではないため
-fragment/coalesceの双方を扱う。read commandとaddress表現は従来どおりだが、
-size tokenは今回の実機観測に基づきhexadecimalとして扱う。
-
-readのPython APIに渡す`size`は要求byte数の整数である。Codecはwire上で
-lower-case hexadecimalへ変換する。実機観測結果は次のとおり。
-
-```text
-R 0124 2   → 2 bytes
-R 0e80 40  → 64 bytes
-R 0e80 64  → 100 bytes
-R 0e80 10  → 16 bytes
-R 0e80 0a  → 10 bytes
-```
-
-VSMDの正常responseでは最後のpayload byteとCRLFの間にASCII spaceが1個入る
-場合がある。Codecは末尾space 0個または1個だけを受理する。任意空白を
-`strip()`せず、行頭space、連続space、tab、末尾space 2個、2桁でないbyte token、
-byte不足・過剰、address不一致を拒否する。
+待たない。typed値はlittle-endianである。
 
 PCAPで確認したwriteとmemory操作は次のとおり。
 
@@ -526,6 +550,13 @@ TriggerPointerの割当規則、timer addressの所有権、lock wire protocol�
 公開口LED IDが14であることを確認した。一方、`CRobotSock`本体と
 `InterpLockerClient` protocolはリポジトリに存在せず未確認である。特にlockの
 addressやpacketは推測せず、production LED writeをfail-closedにする。
+
+#### 18.0.3 未確認または今後の課題
+
+`InterpLockerClient`の完全なwire protocol、lock keyからtimer addressへの割当規則、
+ロック競合時の応答、異常終了時のロック解放、Pythonからの安全なproduction LED
+write、`VsmdSotaCommandTarget`の完全統合、VSMDが許容する最大read size、および
+全responseで末尾spaceが必ず付くかどうかは未確認である。
 
 外部実装を互換性または低レベル仕様の根拠として参照するときは、リポジトリURL、検証済みの完全なcommit SHA、確認日、ライセンス、コピーしたコードか仕様だけを参考にした再実装か、およびレジスタ・ID・パケット・可動範囲ごとの検証状態を記録する。完全なcommit SHAを確認できない場合は推測せずTODOとする。
 
