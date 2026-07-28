@@ -1,248 +1,258 @@
-# Sota Backend設計とread-only capability probe
+# Sota Backend設計：`vsmd_edison` TCP基盤
 
-## 1. このフェーズの位置付け
+## 1. 位置付け
 
-本書は、将来のSota実機Backendに先立つ安全設計と、サーボを駆動しない
-capability probeの境界を定義する。現時点では`SotaCommandTarget`、実機用
-`RobotProfile`、UART実装、Goal Position／Goal Time／torque／LEDの書き込みを
-実装しない。本番TCP ServerとMock Serverにもprobeを組み込まない。
-
-2026-07-26に、次のリポジトリ内資料を確認した。
-
-* `AGENTS.md`
-* `docs/requirements.md`
-* `docs/architecture.md`
-* `docs/migration-plan.md`
-* Python版の`motion_scheduler.py`、`command_service.py`、
-  `command_target.py`、`profiles.py`、`errors.py`
-* Java版の`ServoConverter_Sota.java`、`LedConverter_Sota.java`、
-  `RobotSys.java`、`AxisReader.java`、`PoseExecutorThread.java`、
-  `PosePlayer.java`、`MotionPlayer.java`、`MotionExecutorThread.java`
-* リポジトリ全体のRobotLib、Futaba、UART、packet、checksum、baud、
-  serial、Goalおよびtorqueに関するファイルと文字列
-* Futaba公式「コマンド方式サーボ」製品資料および公式manual一覧
-
-リポジトリ内にはVSTONE RobotLibの実装JAR／ソース、Futabaサーボ仕様書、
-通信仕様書、既知packet sampleまたはpacket test vectorが存在しない。
-Java版は`jp.vstone.RobotLib`の高水準APIを呼ぶだけである。このため、低水準
-packetの具体値をJava版から導出したとは扱わない。
-
-Futaba公式製品資料では、コマンド方式サーボ共通のfield順序が
-`Header + ID + Flag + Address + Count + Length + Data + Checksum`であることを
-確認した。ただし、Sota搭載servoのmodelをリポジトリ資料から特定できないため、
-特定modelのmanualにあるaddress、flag、baud、checksum等をSota用として採用
-しない。
-
-確認した公式ページ（2026-07-26）:
-
-* <https://www.futaba.co.jp/product/industrial_servo/command_type_servos>
-* <https://www.futaba.co.jp/product/industrial_servo/command_type_servos/robot_download/manual>
-
-## 2. 確認できた範囲
-
-Java版から確認できるのは次の高水準情報である。
-
-* Sotaの公開軸名とJava版内部IDは、`BODY_Y=1`、`L_SHOU=2`、
-  `L_ELBO=3`、`R_SHOU=4`、`R_ELBO=5`、`HEAD_Y=6`、`HEAD_P=7`、
-  `HEAD_R=8`である。
-* `AxisReader`はID 1から8に対し、RobotLibの`getReadpos()`が返す配列を
-  対応付ける。低水準read packetは見えない。
-* Java版には軸ごとの角度変換・クランプ値があるが、これは既存アプリケーション
-  の変換であり、サーボモデルの物理安全域としては未検証である。
-* LEDの公開名とJava版内部IDの対応は確認できるが、LED transportや
-  registerは確認できない。
-* `RobotSys`はRobotLibの初期化後に`ServoOn()`、pose、torqueおよびLEDを
-  設定する。この副作用をread-only probeでは再利用しない。
-* `PoseExecutorThread`は`motion.play(pose, msec)`へミリ秒値を渡すが、
-  RobotLib内部のGoal Time変換は見えない。
-* Java版`PosePlayer.stop()`は現在位置を読み、100 msのPoseとして送り直す。
-  これは停止候補の参考にはなるが、物理的安全性は検証されていない。
-
-次は未確定であり、実機送信可能なコードへ値を置かない。
-
-| 項目 | 状態 |
-| --- | --- |
-| シリアルdevice | TBD: architectureに候補記載はあるが実機構成で未確認 |
-| baud rate／UART条件 | TBD: hardware probe/manual verification |
-| サーボモデルとモデル番号 | TBD: manual verification |
-| field順序 | Futaba公式資料でHeader, ID, Flag, Address, Count, Length, Data, Checksumを確認 |
-| packet header値、flags、address、length、countの意味 | TBD: verified model manual |
-| checksum方式 | TBD: verified manual/test vector |
-| read命令とresponse形式 | TBD: verified manual/test vector |
-| model／position／torque／温度／電圧register | TBD: verified manual |
-| broadcast ID | TBD: verified manual |
-| Goal Timeの単位、上限、量子化 | TBD: model-specific manual |
-| torque操作と安全停止 | TBD: model-specific manual/hardware test |
-| サーボ可動範囲 | TBD: mechanical and model verification |
-
-## 3. 将来の層構造
+Sotaの標準Backend候補は、Futaba UARTやI2Cへ直接アクセスせず、
+`127.0.0.1:6498`で待ち受ける標準制御デーモン`vsmd_edison`を利用する。
 
 ```text
 MotionSchedulingCommandTarget
 → SerializedRobotCommandTarget
-→ SotaCommandTarget
-→ SotaTransport
-→ Edison UART／VSTONE hardware
+→ 将来のVsmdSotaCommandTarget
+→ VsmdMemoryClient / typed memory
+→ VsmdTcpTransport
+→ TCP 127.0.0.1:6498
+→ vsmd_edison
 ```
 
-* Motion SchedulerはMotionのPose展開、時間進行、所有権、generationおよび
-  cancelを担当する。
-* Serialized Serviceは下位呼び出しを有界キューで単一スレッド化する。
-* 将来のSotaCommandTargetはPose、stop、axes、WAV、LED等の実機上の意味、
-  Profile変換およびcapability判定を担当する。
-* Transportはbytesの送受信、明示的timeout、partial read、device closeだけを
-  担当する。
-* Packet Codecは確認済みpacket定義によるencode／decode、長さ、ID、
-  checksumおよびresponse構造の検証だけを担当する。
+今回完成させるのは`VsmdProtocolCodec`相当の純粋関数、TCP Transport、
+byte/typed memory、確認済みSota memory map、read-only probe、および
+Fake lockで試験可能な口LEDドメインモデルである。`VsmdSotaCommandTarget`は
+まだComposition Rootへ接続しない。Mockが引き続き既定構成である。
 
-Codec、TransportおよびprobeへMotion、軸名、Profile、retry、torque方針を
-混在させない。
+既存の`hardware/futaba_codec.py`、UART Transport境界、旧capability probeは
+削除しない。ただし、これらは未確認の直接制御方式を調べるためのexperimental
+基盤であり、Sota標準Backendにはしない。`sotalib.jar`が通常利用する
+補間・可動域・現在位置・LED/I2C制御を`vsmd_edison`側に残すためである。
 
-## 4. Packet Codecのfail-closed方針
+## 2. 根拠の分類
 
-`hardware/futaba_codec.py`は、公式資料で確認したfield順序を使用し、
-headerとchecksum関数を
-`FutabaPacketDefinition`として明示注入する純粋Codec境界を提供する。
-header、checksum、read addressおよびflagsの既定値はない。現在のリポジトリ
-資料だけでは実機用definitionを構築できないため、テストのheader／checksumは
-構造試験専用であり、実機仕様を表さない。
+### 2.1 実機で確認済み
 
-確認済みマニュアルを入手した後、次を別々の既知vectorで確認する。
+2026-07-28までの人手による実機調査で次を確認した。
 
-1. read requestのexpected bytes
-2. 正常responseのexpected bytes
-3. checksum不正、header不正、length不正
-4. unexpected ID、stale response、partial response
-5. 最大response長
-
-encode後に同じCodecでdecodeするだけの循環試験を仕様根拠にしない。
-
-## 5. Transport
-
-`SotaTransport`の境界は次である。
+* `vsmd_edison`はTCP `127.0.0.1:6498`で待ち受ける。
+* 接続直後に`#vs-`で始まる改行終端bannerを返す。
+* read requestは`R {address:04x} {size_hex}\r\n`である。
+* read responseは`#{address:04x} {byte:02x} ... \r\n`であり、最後のbyte後に
+  ASCII spaceが1個入る場合がある。
+* write requestは`w 0124 9c 0c\r\n`のようにcommand、address、各byteを
+  ASCII space 1個で区切り、応答を待たない。
+* typed値はlittle-endianである。
+* Sotaの口LEDはglobal LED ID 14であり、2番目のLED driverではlocal index 6。
+* `InterpLEDOutput[14]`は`3200 + 14 * 2 = 3228`である。
+* 口LEDselectorの音声同期sourceは138、通常補間output sourceは3228である。
+* 人手によるJava/sotalib試験のgolden behaviorは次のとおり。
 
 ```text
-open()
-write(bytes)
-read_exact(size, timeout) -> bytes
-close()
+LED14_LOCK_ACQUIRED=true
+ORIGINAL_SELECTOR=138
+ORIGINAL_TARGET=0
+ORIGINAL_OUTPUT=0
+SELECTOR=3228
+AFTER_ON_TARGET=16
+AFTER_ON_OUTPUT=16
+AFTER_OFF_TARGET=0
+AFTER_OFF_OUTPUT=0
+RESTORED_SELECTOR=138
+RESTORED_TARGET=0
+RESTORED_OUTPUT=0
+LED14_LOCK_RELEASED=true
 ```
 
-context managerに対応し、`close()`は冪等とする。`read_exact`はpartial readを
-結合し、EOF、timeoutおよびEINTRを区別する。例外文字列へbuffer全体を含めない。
-Windowsテストでは`FakeSotaTransport`を用いる。fakeはwrite履歴のsnapshotを
-返し、外部変更で内部記録を壊せない。
+復元後、短いWAVに対する口LED音声同期も正常であった。
 
-`PosixSerialTransport`は現時点ではfail closedである。import時に`termios`を
-読み込まずdeviceをopenしない。UART条件の根拠が確定するまで、POSIX上でも
-`open()`を拒否する。標準ライブラリだけの実装ではbaud定数、raw mode、
-exclusive openおよびtimeoutのOS差を個別検証する必要がある。pyserialは実装を
-簡素化する一方、Python 3.6／Yocto対応、導入方法、ライセンスおよび追加依存を
-評価する必要があるため、このフェーズでは追加しない。
+同じPCAPで次のwrite列を確認した。これは実測済みbyte列である。
 
-## 6. capability probe
+```text
+w 01f6 00 00\r\n
+w 0b9c f6 01\r\n
+w 0124 9c 0c\r\n
+w 0a9c 10 00\r\n
+w 01f6 0b 00\r\n
+w 0a9c 00 00\r\n
+w 0124 8a 00\r\n
+w 0b9c f4 01\r\n
+```
 
-`tools/sota_probe.py`は既定でdry-runである。device、baud rate、servo IDsを
-必須指定し、IDの総当たりやdevice自動検出を行わない。dry-runではtransportを
-構築もopenもしない。
+確認された対応は次のとおり。
 
-実行には`--execute-read-only`を要求する。ただし、現在は確認済みread packet
-definitionがないため、deviceをopenする前に
-`UnverifiedHardwareSpecificationError`で拒否する。仕様確定後も
-`ReadOnlyRequest`が許可する操作は`read_model`だけであり、write系operationを
-構築できない。
+* `w 0124 9c 0c`: selector `0x0124`へ3228を書込む。
+* `w 0124 8a 00`: selectorをAudioDiff address 138へ復元する。
+* `w 0a9c 10 00`: `InterpLEDTarget[14]`へ16を書込む。
+* `w 0a9c 00 00`: `InterpLEDTarget[14]`へ0を書込む。
+* `w 0b9c f6 01`: `InterpLEDTriggerPointer[14]`へ`0x01f6`を書込む。
+* `w 01f6 0b 00`: timer address `0x01f6`へ11を書込む。
+* `w 0b9c f4 01`: TriggerPointerを`0x01f4`へ復元する。
 
-probe coreはservoごとに結果を分離する。一台のtimeout／checksum不正により、
-明示指定された後続IDの結果を失わない。raw responseは`--show-raw`時だけ表示
-する。通常出力はdevice、baud、指定ID、応答有無、model identifier、対応可否、
-および限定されたerror型だけとする。
+captureから各writeの対応は確認できるが、TriggerPointerの割当規則、
+timer addressの排他・所有権、lock protocolは未確認である。この観測だけから
+Python版production lockを実装しない。
 
-現時点でmodel allowlistは空である。未知modelを対応済みに推測しない。
+### 2.2 リポジトリの静的解析で確認
 
-## 7. サーボモデル確認とready条件
+* Java版は`CRobotMem`と`CSotaMotion`を利用する。
+* Java版の公開口LED IDは14である。
+* 現在のPython構成は
+  `MotionSchedulingCommandTarget → SerializedRobotCommandTarget → hardware target`
+  で下位I/Oを単一workerへ直列化する。
+* このリポジトリには`CRobotSock`本体、`sotalib.jar`のsource、
+  `InterpLockerClient`のwire protocolは含まれない。
 
-将来のBackend初期化は、各設定済みservo IDからmodel情報を読み、検証済み
-allowlistと照合する。
+### 2.3 未確認
 
-* 未知modelはfail closedとする。
-* 一部IDだけ応答しない場合もreadyにしない。
-* model確認前にtorque、位置、Goal TimeまたはLEDを書かない。
-* probe結果と設定済みIDの過不足を初期化エラーにする。
-* ID重複を拒否する。
+* `InterpLockerClient`の接続先、packet framing、key encoding、LED ID配列形式、
+  成功応答、失敗応答、timeout、所有権喪失時の挙動。
+* lockのlease、再入、切断時解放、stale owner処理。
+* servo/LEDの全memory fieldの意味と更新順序。
+* write送信後のdaemon内部適用時点。したがって失敗したwriteは自動再送しない。
 
-model番号を読むregister／packetはTBDである。
+未確認値を推測したproduction fallbackは作らない。
 
-将来のSota Backendは最低限、device open、UART条件設定、設定済み全servoの
-応答、model allowlist、ID重複なし、Profileとの軸対応、`read_axes`、必要な
-LED／WAV機能の初期状態を確認後にreadyとする。ready前にTCP listenしない。
+## 3. Codec
 
-## 8. Goal Time
+`robot_controller.hardware.vsmd.codec`はsocketを操作しない。
 
-`Pose.duration_ms`をhardware時間へ変換する責務は将来のSotaCommandTarget側に
-置く。次はすべてTBDである。
+* `encode_read_request(address, size)`
+* `decode_read_response(data_line, expected_address, expected_size)`
+* `encode_write_request(address, payload)`
+* `parse_server_banner(line)`
 
-* model別の単位、最小／最大、量子化方法
-* 範囲外をrejectするかclampするか
-* 0 msの物理的意味
-* 複数servoへ同じGoal Timeを送る方法
-* Goal PositionとGoal Timeを同一packetへ含められるか
-* model間の差異
+addressは0..65535、sizeは正、payloadは非空とする。writeはlower-case `w`、
+4桁lower-case hexadecimal address、各2桁lower-case hexadecimal byteを
+ASCII spaceちょうど1個で区切り、CRLFで終端する。readのPython APIではsizeを
+byte数の整数で受け、wireではlower-case hexadecimalへ変換する。
 
-Schedulerは現在と同じ`duration_ms`だけ待つ。packet送信時間の累積による
-Motion driftを単調時計で測定し、補正するかは実機Backend試験後に決める。
-通信結果が不明な副作用packetは盲目的に再送しない。
+```text
+R 0124 2   → 2 bytes
+R 0e80 40  → 64 bytes
+R 0e80 64  → 100 bytes
+```
 
-## 9. stopの物理的意味
+responseは4桁address、2桁byte token、要求address、要求byte数を完全一致で
+検証する。末尾ASCII spaceは0個または1個だけ許可し、行頭space、連続space、
+tab、末尾space 2個、余分・不足byte、不正hex、bannerのresponse誤認を拒否する。
 
-次の三つを区別する。
+## 4. TCP Transport
 
-1. Scheduler generationのcancel
-2. 古いgenerationの後続Poseを送らない保証
-3. 現在動作中のservoを物理的に停止する操作
+`VsmdTcpTransport`はconnect/read/write timeout、最大行長、内部line bufferを持つ。
+fragmented receiveとcoalesced receiveの双方を処理し、bannerと最初のresponseが
+同じ`recv()`に入ってもresponseを失わない。`connect()`と`close()`は冪等で、
+context managerに対応する。raw socketは公開しない。
 
-現行SchedulerとSerialized Serviceは、stop後の古いPose投入を論理的に防ぐ。
-ただし、Transportへwriteを開始済みの一packetを途中で取り消すことはできない。
-実機I/O直前にもgenerationを再確認するAPIが必要かは、SotaCommandTarget設計時
-に検討する。
+自動再接続と自動retryは行わない。特にwriteの送信開始後はdaemon側結果が不明に
+なるため、`VsmdWriteOutcomeUnknownError`として上位判断へ戻し、重複実行を避ける。
+通常のRobotControllerへ統合するときも、このTransportは単一hardware workerから
+呼ぶ。
 
-物理停止の候補は、現在位置を読み、その値を新しい目標位置として、検証済みの
-短いGoal Timeまたはhold方法で送ることである。Java版の100 ms Poseは参考情報
-にすぎず、実機検証前に仕様確定しない。torque offを通常stopの既定動作に
-しない。
+## 5. Memoryとtyped access
 
-## 10. torqueの安全方針
+`VsmdMemoryClient`は次のbyte APIだけを持つ。
 
-* torque enableと位置目標を同一packetに混在させない。
-* Backend初期化時に無条件でtorqueを有効化しない。
-* 可能なら現在のtorque状態をreadで確認する。
-* torque offを通常stopに使わない。
-* shutdown時のtorque方針は明示設定とし、既定値を推測しない。
-* 応答喪失など結果不明のtorque packetを盲目的に再送しない。
+```text
+read_bytes(address, size)
+write_bytes(address, payload)
+```
 
-## 11. timeout、response検証およびretry
+`VsmdTypedMemory`はU8/S8/U16/S16/U32/S32、U8/S16/U16 arrayをlittle-endian
+で変換する。`bool`、非整数、型の範囲外、address spaceを越えるindexは拒否し、
+maskや切り捨てを行わない。array element addressは
+`calculate_indexed_address()`へ共通化する。
 
-read requestの送信timeoutとresponse待ちtimeoutを分離する。responseでは
-partial length、header、checksum、servo ID、packet length、stale responseを
-検証する。readのretry回数は設定化し、既定値は仕様・実機試験後に決める。
-Goal Position、Goal Time、torque等の副作用writeは、結果不明時に自動再送
-しない。
+## 6. 確認済みmemory map
 
-## 12. 実機probe前チェックリスト
+| 名前 | address/base | length |
+| --- | ---: | ---: |
+| `AUDIO_DIFF_VALUE_ADDRESS` | 138 | - |
+| `MOUTH_LED_SELECTOR_ADDRESS` | 292 | - |
+| `MOUTH_LED_AUDIO_SOURCE_ADDRESS` | 138 | - |
+| `MOUTH_LED_NORMAL_SOURCE_ADDRESS` | 3228 | - |
+| `INTERP_TARGET_TIME_BASE` | 496 | 32 |
+| `INTERP_LED_TARGET_BASE` | 2688 | 16 |
+| `INTERP_LED_OUTPUT_BASE` | 3200 | 16 |
+| `SERVO_READ_POSITION_BASE` | 3712 | 32 |
 
-実行は人間が内容を確認して手動で行う。Codex等の自動エージェントは実機で
-実行しない。
+`InterpLEDTarget`は指令値、`InterpLEDOutput`はdaemonが周期更新する出力値である。
+口LED制御はTargetへ書き、Outputへ直接書いてはならない。
 
-- [ ] 検証済み公式manual、版、対象model、test vectorを記録した
-- [ ] model read address／flags／length／checksumを独立vectorで確認した
-- [ ] deviceとbaud rateを対象機の設定から確認した
-- [ ] servo IDsを設定資料と物理構成から確認し、総当たりしない
-- [ ] 対応model allowlistを確定した
-- [ ] Java RobotControllerを人間が停止した
-- [ ] 同じUARTを使用中の別processがないことを確認した
-- [ ] aplay／LED processとは別にUART所有processを確認した
-- [ ] probeが送る全bytesをレビューし、readだけであることを確認した
-- [ ] robotを物理的に安定させ、緊急停止手順を担当者が把握した
-- [ ] timeout、ログ保存、Java版への復帰手順を確認した
-- [ ] probe終了時にdeviceがcloseされることを確認した
+## 7. 口LEDドメインモデル
 
-probeはprocessを自動killせず、`systemctl`を呼ばず、実機設定を変更しない。
+`SotaMouthLedController`は次の状態遷移を表す。
+
+1. LED 14 lock取得。
+2. selectorとTarget[14]を保存。
+3. selectorが138または3228であることを確認。
+4. selectorを3228へ切り替える。
+5. Target[14]と正規の補間timerを使ってbrightnessを変更。
+6. 終了時は安全値0、selector、元Targetの順で復元を試みる。
+7. 例外や`KeyboardInterrupt`でもlock releaseを必ず試みる。
+
+selector復元は元Target復元より先に試す。未知selectorでは一切writeせず
+fail-closedにする。`close()`は冪等である。
+
+`VsmdLedLock`は抽象のみである。production既定の
+`UnavailableVsmdLedLock`は`VsmdLedLockUnavailableError`をwrite前に送出する。
+したがって、現在のproduction構成にlockなしLED write経路は存在しない。
+
+## 8. read-only probe
+
+人間が実機で手動実行する場合だけ、次を使用する。
+
+```powershell
+cd python_server
+python -m robot_controller.hardware.vsmd.probe
+```
+
+このprobeはbanner、接続先、timeout、selector、AudioDiff、Target[14]、
+Output[14]、ServoReadPos 32要素を表示する。read requestの送信だけを行い、
+memory write APIや`--write`、`--execute`、`--disable-voice-sync`、
+`--dry-run`を持たない。import時には接続しない。
+
+Codexを含む自動エージェントは実機で実行しない。
+
+## 9. hardware safety
+
+`vsmd_edison`を停止・disable・再起動しない。`/dev/ttyMFD1`、
+`/dev/i2c-1`、GPIO、`/dev/shm/vsmd_mem`へPythonから直接writeしない。
+probeはmemory readだけに限定し、servo、LED、torque、初期Poseを変更しない。
+自動テストはsocket stubとFake memory/lock/timerだけを使う。
+
+実機でのread-only probeは人間が内容を確認して手動実行する。実機write試験は
+lock protocol、復元順、低輝度・短時間の試験手順を別途レビューした後に限り、
+自動テストとは分離して行う。
+
+## 10. 次の解析項目
+
+`InterpLockerClient`について、公式または実機traceから次を確定する。
+
+1. transport endpointと接続lifecycle
+2. request/response framingとbyte order
+3. lock keyの文字コード・長さ制限
+4. LED ID配列の型、順序、重複規則
+5. acquire/release成功と競合時の応答
+6. timeout、EOF、partial response、再接続方針
+7. process異常終了・socket切断時のlock解放
+8. lock取得後にだけTarget/selector writeが許可されること
+9. Java `LockLEDHandle`/`UnLockLEDHandle`とのgolden vector比較
+
+これらをFake test vectorで固定した後にのみproduction lockを実装し、
+experimentalなComposition Root設定を追加する。
+
+## 11. experimental Futaba直接制御基盤の扱い
+
+既存の`FutabaPacketCodec`、`SotaTransport`、`PosixSerialTransport`、
+`SotaCapabilityProbe`は削除しない。公式manual、対象servo model、完全な
+packet golden vector、device、baud、register、checksum、可動域が未確認のため、
+現在どおりfail-closedな実験用境界として残す。
+
+この経路で将来調査する場合も次の安全条件を維持する。
+
+* `PosixSerialTransport`は確認済みUART条件が揃うまでdeviceをopenしない。
+* model allowlist確定前にtorque、位置、Goal Time、LEDを書かない。
+* torque enableを初期化時に推測で行わず、通常stopをtorque offにしない。
+* 現在位置holdやGoal Timeの物理的意味をJavaの100 ms Poseだけから推測しない。
+* 結果不明のposition、time、torque packetを自動再送しない。
+* 非公式実装を参照する場合はURL、完全commit SHA、確認日、license、利用方法、
+  各低レベル値の検証状態を`protocol-compatibility.md`へ記録する。
+
+このexperimental経路を標準BackendまたはComposition Rootの既定値へ昇格させない。

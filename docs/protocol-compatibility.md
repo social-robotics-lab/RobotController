@@ -468,6 +468,65 @@ v2は、既存v1クライアントが誤ってv2応答を受け取らない方�
 
 ## 18. Reference baselines
 
+### 18.0 確認済み`vsmd_edison` protocol
+
+この節はRobotControllerの外部legacy v1ではなく、Sota Backend内部で利用する
+localhost protocolを記録する。2026-07-28までの人手による実機調査で確認済み。
+
+```text
+endpoint: 127.0.0.1:6498
+banner:   #vs-...\r\n
+read:     R {address:04x} {size_hex}\r\n
+response: #{address:04x} {byte0:02x} ... \r\n
+write:    w {address:04x} {byte0:02x} {byte1:02x} ...\r\n
+```
+
+write形式は実機上の`sotalib.jar`通信をPCAPで確認した。先頭はlower-case `w`、
+command、4桁lower-case hexadecimal address、各2桁lower-case hexadecimal
+payload byteの間はASCII spaceちょうど1個、終端はCRLFである。write responseは
+待たない。typed値はlittle-endian。responseの改行、address、各2桁hex token、
+要求byte数を厳密に検証する。TCP packet境界はline境界ではないため
+fragment/coalesceの双方を扱う。read commandとaddress表現は従来どおりだが、
+size tokenは今回の実機観測に基づきhexadecimalとして扱う。
+
+readのPython APIに渡す`size`は要求byte数の整数である。Codecはwire上で
+lower-case hexadecimalへ変換する。実機観測結果は次のとおり。
+
+```text
+R 0124 2   → 2 bytes
+R 0e80 40  → 64 bytes
+R 0e80 64  → 100 bytes
+R 0e80 10  → 16 bytes
+R 0e80 0a  → 10 bytes
+```
+
+VSMDの正常responseでは最後のpayload byteとCRLFの間にASCII spaceが1個入る
+場合がある。Codecは末尾space 0個または1個だけを受理する。任意空白を
+`strip()`せず、行頭space、連続space、tab、末尾space 2個、2桁でないbyte token、
+byte不足・過剰、address不一致を拒否する。
+
+PCAPで確認したwriteとmemory操作は次のとおり。
+
+| 確認済みwire line | 確認された操作 |
+| --- | --- |
+| `w 0124 9c 0c` | `MOUTH_LED_SELECTOR_ADDRESS` (`0x0124`)へlittle-endian 3228を書込む |
+| `w 0124 8a 00` | selectorをAudioDiff address 138へ復元する |
+| `w 0a9c 10 00` | `InterpLEDTarget[14]`へ16を書込む |
+| `w 0a9c 00 00` | `InterpLEDTarget[14]`へ0を書込む |
+| `w 0b9c f6 01` | `InterpLEDTriggerPointer[14]`へ`0x01f6`を書込む |
+| `w 01f6 0b 00` | 補間timer address `0x01f6`へ11を書込む |
+| `w 0b9c f4 01` | `InterpLEDTriggerPointer[14]`を`0x01f4`へ復元する |
+
+上表は観測byte列とその対応についての実測済み仕様である。一方、
+TriggerPointerの割当規則、timer addressの所有権、lock wire protocol、
+競合・切断時の挙動はこのcaptureだけでは未確認である。これらを静的解析だけで
+推定してproduction lockを実装しない。
+
+静的解析で、このリポジトリのJava版が`CRobotMem`/`CSotaMotion`を使用すること、
+公開口LED IDが14であることを確認した。一方、`CRobotSock`本体と
+`InterpLockerClient` protocolはリポジトリに存在せず未確認である。特にlockの
+addressやpacketは推測せず、production LED writeをfail-closedにする。
+
 外部実装を互換性または低レベル仕様の根拠として参照するときは、リポジトリURL、検証済みの完全なcommit SHA、確認日、ライセンス、コピーしたコードか仕様だけを参考にした再実装か、およびレジスタ・ID・パケット・可動範囲ごとの検証状態を記録する。完全なcommit SHAを確認できない場合は推測せずTODOとする。
 
 ### 18.1 通信互換性の基準

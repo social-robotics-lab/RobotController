@@ -51,3 +51,47 @@ For example, if you use play_wav command, you should send message as follows:
 3. The client sends the size of the wav data.
 4. The client sends the wav data.
 
+## Python version
+
+The Python implementation is under `python_server/` and targets CPython
+3.6.15. The safe Mock Server remains the default development composition.
+
+The Sota standard-backend foundation communicates with the existing
+`vsmd_edison` daemon at `127.0.0.1:6498`; it does not open Futaba UART or I2C
+devices directly. A human operator may run the confirmed read-only probe on a
+Sota as follows:
+
+```text
+cd python_server
+python -m robot_controller.hardware.vsmd.probe
+```
+
+The probe connects and reads the server banner, mouth selector, AudioDiff,
+mouth interpolation Target/Output, and ServoReadPos. It has no memory-write
+option. Automated agents and automated tests must not run it against a real
+robot.
+
+The VSMD memory-write line was verified from a PCAP capture of
+`sotalib.jar`. It uses one ASCII space between every field:
+
+```text
+w 0124 9c 0c\r\n
+```
+
+The general form is lower-case `w`, a four-digit lower-case hexadecimal
+address, and one or more two-digit lower-case hexadecimal bytes, all separated
+by exactly one space and terminated by CRLF. Write requests have no response.
+The Python API accepts an integer byte count, but the VSMD wire size token is
+lower-case hexadecimal. For example, 64 bytes is `R 0e80 40\r\n`; sending
+`R 0e80 64\r\n` requests 100 bytes because VSMD interprets `64` as `0x64`.
+Read responses may contain exactly one ASCII space after the final byte, as in
+`#0124 8a 00 \r\n`. The Codec accepts zero or one trailing space but rejects
+leading spaces, repeated spaces, tabs, malformed byte tokens, and size or
+address mismatches.
+
+The production mouth-LED path is intentionally unavailable until the exact
+`InterpLockerClient` protocol is verified. Existing Futaba direct-control
+code remains isolated for experiments and is not the standard Sota Backend.
+See `docs/sota-backend-design.md` for verified facts, static-analysis findings,
+and unresolved items.
+

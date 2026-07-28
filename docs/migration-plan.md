@@ -183,46 +183,45 @@
 
 ## 9. フェーズ6：Sota低レベル読み取り
 
-このフェーズの前段として、`sota-backend-design.md`に実機Backendの安全境界を
-整理し、packet codec／transportの注入境界、fake transportおよびdry-run
-capability probeを用意する。確認済みpacket仕様がない間、probeは実deviceを
-openせず、read packetも送信しない。この前段作業はSota Backend実装または
-実機試験の完了を意味しない。
+Sota標準Backend候補は、UARTやI2Cへ直接アクセスせず、既存の
+`vsmd_edison`へTCP `127.0.0.1:6498`で接続する。確認済みprotocolのcodec、
+buffer付きTCP Transport、byte/typed memory、Sota memory mapおよび
+read-only probeを先に独立完成させる。この前段作業は
+`VsmdSotaCommandTarget`または実機試験の完了を意味しない。
 
 ### 事前条件
 
-* 参照する非公式実装について、リポジトリURL、完全なcommit SHA、確認日、ライセンス、コピーか仕様参考による再実装か、およびレジスタ・ID・パケット・可動範囲の検証状態がReference baselinesへ記録されている。
-* 完全なcommit SHAまたは低レベル値を確認できない項目はTODOであり、推測して実装されていない。
 * 実機を物理的に安定させる。
 * Java版へ戻す手順を確認する。
 * `vsmd_edison`の現在状態を記録する。
-* デバイスファイルの権限を確認する。
 * 実機試験担当者が緊急停止方法を把握する。
 
 ### 作業
 
-* Edison Sota Backendのリソース管理を実装する。
-* デバイスを読み書きするTransport層を分離する。
-* サーボ角度要求パケットを生成する。
-* エコーと応答を検証する。
-* タイムアウトを実装する。
-* 応答長、ヘッダ、ID、チェックサムを検証する。
-* `read_axes`だけを実機で確認する。
+* banner、read request/response、write requestのcodecを分離する。
+* fragmented/coalesced receive、timeout、EOF、最大行長を検証する。
+* little-endian typed memoryとaddress/index検証を実装する。
+* 人間がread-only probeで確認済みrangeだけを読む。
 
 ### 禁止
 
 * このフェーズでサーボ目標位置を送らない。
 * 自動的に`vsmd_edison`を停止しない。
+* `/dev/ttyMFD1`または`/dev/i2c-1`を直接開かない。
 * Codexを含む自動エージェントは、許可の有無にかかわらず実機デバイス、`systemctl`、サーボ、LEDおよびトルクを操作しない。
 
 ### 完了条件
 
-* 複数回の`read_axes`で妥当な値が返る。
+* bannerと確認済みmemory rangeをread-onlyで取得できる。
 * タイムアウト時にサーバーが復帰可能である。
-* デバイスが確実にcloseされる。
+* TCP socketが確実にcloseされる。
 * Java版へ戻せる。
 
 ## 10. フェーズ7：Sota LED
+
+最初に口LEDのドメイン状態遷移をFake memory、Fake timer、Fake lockで完成させる。
+productionでは`InterpLockerClient` protocolが確認できるまでlock取得を
+`VsmdLedLockUnavailableError`で拒否し、memory writeを行わない。
 
 ### 試験順序
 
@@ -235,16 +234,19 @@ openせず、read packetも送信しない。この前段作業はSota Backend�
 
 ### 作業
 
-* LEDレジスタをプロファイル化する。
-* 左右の文書と実機の不一致を確認する。
+* 口LED global ID 14、selector 292、Target/Outputの差を固定する。
+* `3200 + 14 * 2 = 3228`をコードとテストで固定する。
 * 0～255の範囲を検証する。
-* 停止・終了時のLED方針を決める。
+* selectorとTargetの保存・復元、例外時releaseを検証する。
+* `InterpLEDOutput[14]`へ直接writeしない。
+* 正確なlock protocolを解析してgolden vectorを作る。
 
 ### 完了条件
 
-* 全LED名と物理LEDの対応が確認されている。
-* 未知LED名が拒否される。
-* WindowsのMockと同じ外部APIで動作する。
+* lock失敗時には一切writeしない。
+* 通常、例外、割込みでselectorとTargetが復元される。
+* productionにlock迂回経路が存在しない。
+* 人間による低輝度・短時間試験でgolden behaviorを再確認している。
 
 ## 11. フェーズ8：Sota単一軸制御
 

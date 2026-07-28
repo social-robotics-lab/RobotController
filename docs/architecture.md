@@ -490,32 +490,45 @@ Mockはログを出すだけでなく、内部状態を更新して `read_axes` 
 
 ### 12.3 Edison Sota Backend
 
-Edison版Sotaの低レベル処理は専用モジュールに隔離する。
+Edison版Sotaの標準Backend候補は、実機deviceへ直接アクセスせず、
+TCP `127.0.0.1:6498`の`vsmd_edison`を利用する。
 
-実機Backend着手前の安全設計、未確定値、fail-closedなpacket codec境界、
-transport境界およびread-only probeは
-[`sota-backend-design.md`](sota-backend-design.md)に定義する。現段階のprobeは
-dry-runが既定であり、リポジトリ内に確認済みFutaba packet仕様がないため
-実deviceへの送信を行わない。このフェーズはSotaCommandTargetの実装ではない。
+```text
+MotionSchedulingCommandTarget
+→ SerializedRobotCommandTarget
+→ 将来のVsmdSotaCommandTarget
+→ VsmdMemoryClient / VsmdTypedMemory
+→ VsmdTcpTransport
+→ vsmd_edison
+→ UART / I2C / GPIO / shared memory
+```
 
-想定される依存は次のとおり。
+Protocol codec、TCP Transport、byte/typed memory、確認済みSota memory map、
+read-only probe、口LEDドメインモデルは`hardware/vsmd/`へ隔離する。詳細、
+確認済み事項、静的解析による確認、未確認事項は
+[`sota-backend-design.md`](sota-backend-design.md)に定義する。
 
-* `/dev/i2c-1`
-* `/dev/ttyMFD1`
-* `fcntl.ioctl`
-* バイナリパケット
-* チェックサム
-* ロボット固有の変換
+実機上の`sotalib.jar`通信をPCAPで確認したVSMD write形式は
+`w 0124 9c 0c\r\n`のようにcommand、4桁lower-case hexadecimal address、
+各2桁lower-case hexadecimal byteをASCII space 1個で区切る。Codecはこの
+wire表現だけを生成し、network I/Oとは分離する。readのPython APIはsizeを
+byte数の整数で受けるが、wire tokenはlower-case hexadecimalで生成する。
+したがって64 bytesは`R 0e80 40\r\n`であり、`R 0e80 64\r\n`はVSMD側で
+`0x64`、つまり100 bytesとして解釈される。
 
-非公式実装は参考資料として扱い、次をそのまま継承しない。
+read responseは`#0124 8a 00 \r\n`のように最後のbyteとCRLFの間へASCII
+space 1個を含む場合がある。Codecは末尾spaceを0個または1個だけ許可し、
+行頭space、連続space、tab、LF単独、token幅不正は拒否する。
 
-* Python 2固有の記述
-* `__del__()`だけによる解放
-* 応答長未検証
-* チェックサム未検証
-* タイムアウトなし
-* サーボID未検証
-* 可動範囲未検証
+現段階では`VsmdSotaCommandTarget`をComposition Rootへ接続しない。
+特に口LEDは正確な`InterpLockerClient` protocolが未確認であるため、
+production既定lockがwrite前に明示的な例外を送出する。lockを迂回するfallback、
+`InterpLEDOutput`への直接write、接続時の`InitRobot()`・`ServoOn()`・初期Pose相当
+は実装しない。
+
+既存のFutaba UART codec/transport/probeは削除せず、低レベル調査用の
+experimental Backendとして隔離する。`vsmd_edison`が提供する補間、可動域、
+現在位置、LEDおよびI2C制御を再利用できないため、標準Backendにはしない。
 
 ### 12.4 非公式実装の出典管理
 
@@ -662,13 +675,15 @@ pytestはPython 3.6対応版へ固定し、初期候補を`pytest==6.2.5`とす�
 
 ## 18. デプロイ
 
-WindowsではMockで実行する。
+Windowsおよび現在のproduction Composition RootではMockで実行する。
 
 ```text
 robot.type = Mock
 ```
 
-実機では対象バックエンドを設定する。
+将来、VSMD lock protocolと`VsmdSotaCommandTarget`の検証後に限り、
+明示的なexperimental設定でSota Backendを選択可能にする。現時点で次の設定例は
+設計上の予約であり、有効なCLI設定ではない。
 
 ```text
 robot.type = Sota
