@@ -232,8 +232,22 @@ Python 3.14.3からSSH local port forwarding経由でread-only probeの実機確
 ## 10. フェーズ7：Sota LED
 
 最初に口LEDのドメイン状態遷移をFake memory、Fake timer、Fake lockで完成させる。
-productionでは`InterpLockerClient` protocolが確認できるまでlock取得を
-`VsmdLedLockUnavailableError`で拒否し、memory writeを行わない。
+TCP 6495のSotaAppManager protocolについては、strict Codec、1 request /
+1 connection Transport、key/IDs/timer addressを所有するlease候補をFakeだけで
+実装する。productionでは安全な実機write手順と競合・異常終了時の運用が確定するまで
+lock取得を`VsmdLedLockUnavailableError`で拒否し、memory writeを行わない。
+
+### 現在の実装状態
+
+* [x] compact ASCII JSON + LFのLOCK、CONVERT、UNLOCK Codec
+* [x] `OK`、`NG`、`null`、確認済み`java.lang.Short`だけのresponse decoder
+* [x] server-first header、4096-byte上限、自動retryなしのTCP Transport
+* [x] unique key、immutable IDs、single-releaseの`AppManagerLedLockLease`
+* [x] convert失敗時のbest-effort UNLOCKをFake transportで検証
+* [ ] 実機6495接続によるPython candidateのread/write検証
+* [ ] lock競合、non-LIFO、異常終了時の安全な回復手順
+* [ ] `UnavailableVsmdLedLock`からproduction candidateへの切替
+* [ ] Composition Root統合と実機LED write
 
 ### 試験順序
 
@@ -251,7 +265,7 @@ productionでは`InterpLockerClient` protocolが確認できるまでlock取得�
 * 0～255の範囲を検証する。
 * selectorとTargetの保存・復元、例外時releaseを検証する。
 * `InterpLEDOutput[14]`へ直接writeしない。
-* 正確なlock protocolを解析してgolden vectorを作る。
+* 追加の競合・異常系golden vectorと安全な回復手順を確定する。
 
 ### 完了条件
 

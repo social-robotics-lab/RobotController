@@ -497,10 +497,13 @@ TCP `127.0.0.1:6498`の`vsmd_edison`を利用する。
 MotionSchedulingCommandTarget
 → SerializedRobotCommandTarget
 → 将来のVsmdSotaCommandTarget
-→ VsmdMemoryClient / VsmdTypedMemory
-→ VsmdTcpTransport
-→ vsmd_edison
-→ UART / I2C / GPIO / shared memory
+├→ VsmdMemoryClient / VsmdTypedMemory
+│  → VsmdTcpTransport
+│  → TCP 127.0.0.1:6498 / vsmd_edison
+│  → UART / I2C / GPIO / shared memory
+└→ AppManagerLedLockLease
+   → AppManagerTcpTransport
+   → TCP 127.0.0.1:6495 / SotaAppManager.jar
 ```
 
 Protocol codec、TCP Transport、byte/typed memory、確認済みSota memory map、
@@ -539,9 +542,11 @@ read responseは`#0124 8a 00 \r\n`のように最後のbyteとCRLFの間へASCII
 space 1個を含む場合がある。Codecは末尾spaceを0個または1個だけ許可し、
 行頭space、連続space、tab、LF単独、token幅不正は拒否する。
 
-現段階では`VsmdSotaCommandTarget`をComposition Rootへ接続しない。
-特に口LEDは正確な`InterpLockerClient` protocolが未確認であるため、
-production既定lockがwrite前に明示的な例外を送出する。lockを迂回するfallback、
+TCP 6495候補は1 request / 1 connection、server-first Java serialization header、
+compact ASCII JSON + LF、限定Java response decoder、single-release leaseへ分離する。
+これはまだ実機接続しておらず、現段階では`VsmdSotaCommandTarget`をComposition
+Rootへ接続しない。production既定lockは引き続きwrite前に明示的な例外を送出する。
+lockを迂回するfallback、
 `InterpLEDOutput`への直接write、接続時の`InitRobot()`・`ServoOn()`・初期Pose相当
 は実装しない。
 

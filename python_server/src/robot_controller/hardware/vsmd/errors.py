@@ -153,3 +153,39 @@ class VsmdMouthLedStateError(VsmdLedError):
 
 class VsmdUnexpectedMouthSelectorError(VsmdLedError):
     """The mouth selector has an unrecognized value and was not modified."""
+
+
+class AppManagerError(VsmdError):
+    """Base class for SotaAppManager interpolation-lock failures."""
+
+
+class AppManagerConnectionError(AppManagerError):
+    """A request could not connect before any command bytes were sent."""
+
+
+class AppManagerTimeoutError(AppManagerError):
+    """A timeout occurred before request submission began."""
+
+
+class AppManagerProtocolError(AppManagerError):
+    """SotaAppManager sent bytes outside the verified protocol subset."""
+
+
+class AppManagerUnexpectedResponseError(AppManagerError):
+    """A valid serialized value was not valid for the current operation."""
+
+
+class AppManagerLockRejectedError(AppManagerError):
+    """SotaAppManager explicitly returned ``NG`` for a lock request."""
+
+
+class AppManagerTimerAddressError(AppManagerError):
+    """A converted lock key had no valid interpolation timer address."""
+
+
+class AppManagerUnlockError(AppManagerError):
+    """An unlock request was explicitly rejected or had the wrong value."""
+
+
+class AppManagerOutcomeUnknownError(AppManagerError):
+    """A submitted request may have taken effect and must not be retried."""

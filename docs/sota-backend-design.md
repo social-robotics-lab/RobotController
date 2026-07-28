@@ -130,21 +130,23 @@ Python版production lockを実装しない。
 
 * Java版は`CRobotMem`と`CSotaMotion`を利用する。
 * Java版の公開口LED IDは14である。
+* `SotaAppManager.jar`はTCP `127.0.0.1:6495`で補間timerのlock、keyから
+  timer addressへの変換、unlockを処理する。
+* 1 request / 1 connectionで、server-first Java serialization headerの後に
+  compact ASCII JSON + LFを送り、Java serialized responseをEOFまで受信する。
 * 現在のPython構成は
   `MotionSchedulingCommandTarget → SerializedRobotCommandTarget → hardware target`
   で下位I/Oを単一workerへ直列化する。
-* このリポジトリには`CRobotSock`本体、`sotalib.jar`のsource、
-  `InterpLockerClient`のwire protocolは含まれない。
+* このリポジトリには`CRobotSock`本体、`sotalib.jar`または
+  `SotaAppManager.jar`のsourceは含まれない。
 
 ### 2.3 未確認
 
-* `InterpLockerClient`の接続先、packet framing、key encoding、LED ID配列形式、
-  成功応答、失敗応答、timeout、所有権喪失時の挙動。
-* lockのlease、再入、切断時解放、stale owner処理。
+* lock競合時の全応答と、他processによる重複lockを安全に検出する方法。
+* process異常終了後のlock回復手順とstale owner処理。
 * servo/LEDの全memory fieldの意味と更新順序。
 * write送信後のdaemon内部適用時点。したがって失敗したwriteは自動再送しない。
-* lock keyからtimer addressへの割当規則と、ロック競合時の応答。
-* 異常終了時のロック解放。
+* 496..558の範囲を越えた、lock keyからtimer slotへの完全な割当規則。
 * Pythonからの安全なproduction LED write。
 * `VsmdSotaCommandTarget`の完全統合。
 * VSMDが許容する最大read size。
@@ -237,6 +239,29 @@ fail-closedにする。`close()`は冪等である。
 `UnavailableVsmdLedLock`は`VsmdLedLockUnavailableError`をwrite前に送出する。
 したがって、現在のproduction構成にlockなしLED write経路は存在しない。
 
+### 7.1 AppManager lock候補
+
+`AppManagerProtocolCodec`はcompact request JSONと、`OK`、`NG`、`null`、確認済み
+`java.lang.Short`だけを扱う。汎用Java deserializerではない。
+`AppManagerTcpTransport`はTCP 6495へ1 requestごとに接続し、server-first headerを
+検証してからASCII JSON + LFを1回送信し、4096 bytes以下のresponseをEOFまで読む。
+自動retryは行わない。
+
+`AppManagerLedLock.acquire_leds(ids)`は呼出しごとに
+`python-led-<uuid4 hex>`形式のASCII keyを生成し、LOCK OK、key変換、timer address
+検証の後に`AppManagerLedLockLease`を返す。leaseはkey、取得時IDsのtuple、timer
+addressを保持し、UNLOCKは1回しか送らない。二重releaseは成功後no-op、失敗後は
+同じ例外を再送出し、network retryを行わない。
+
+LOCK OK後のconvert失敗では同じkey/IDsでbest-effort UNLOCKを1回試す。cleanupの
+結果も不明なら`AppManagerOutcomeUnknownError`とする。lockはmutexではなく
+TriggerPointer stack操作なので、同じLEDを複数keyで重ねず、leaseをnon-LIFO順に
+解放しない。他processとの排他所有を保証せず、異常終了時の自動解放もない。
+
+この候補は`VsmdLedLock`のproduction既定値を置換せず、Composition Rootにも接続
+しない。実機LED writeは引き続き無効である。wire詳細とgolden vectorsは
+[`protocol-compatibility.md`](protocol-compatibility.md)へ集約する。
+
 ## 8. read-only probe
 
 人間が実機で手動実行する場合だけ、次を使用する。2026-07-28にはWindows 11 /
@@ -284,20 +309,17 @@ lock protocol、復元順、低輝度・短時間の試験手順を別途レビ�
 
 ## 10. 次の解析項目
 
-`InterpLockerClient`について、公式または実機traceから次を確定する。
+次の事項を追加解析し、実機writeとは分離してレビューする。
 
-1. transport endpointと接続lifecycle
-2. request/response framingとbyte order
-3. lock keyの文字コード・長さ制限
-4. LED ID配列の型、順序、重複規則
-5. acquire/release成功と競合時の応答
-6. timeout、EOF、partial response、再接続方針
-7. process異常終了・socket切断時のlock解放
-8. lock取得後にだけTarget/selector writeが許可されること
-9. Java `LockLEDHandle`/`UnLockLEDHandle`とのgolden vector比較
+1. lock競合時の全responseとstack状態。
+2. 他processによる同一LED lockを検出できるか。
+3. non-LIFO unlock時のJava側挙動と回復手順。
+4. process異常終了後のstale stackを安全に回復する運用。
+5. lock取得後にだけTarget/selector writeが許可されることの実機確認。
+6. Java `LockLEDHandle`/`UnLockLEDHandle`との追加golden vector比較。
 
-これらをFake test vectorで固定した後にのみproduction lockを実装し、
-experimentalなComposition Root設定を追加する。
+これらと安全な実機試験手順を確定した後にのみproduction既定lockやexperimentalな
+Composition Root設定を検討する。
 
 ## 11. experimental Futaba直接制御基盤の扱い
 

@@ -547,16 +547,79 @@ TriggerPointerの割当規則、timer addressの所有権、lock wire protocol�
 推定してproduction lockを実装しない。
 
 静的解析で、このリポジトリのJava版が`CRobotMem`/`CSotaMotion`を使用すること、
-公開口LED IDが14であることを確認した。一方、`CRobotSock`本体と
-`InterpLockerClient` protocolはリポジトリに存在せず未確認である。特にlockの
-addressやpacketは推測せず、production LED writeをfail-closedにする。
+公開口LED IDが14であることを確認した。`CRobotSock`本体と
+`InterpLockerClient` sourceはリポジトリに含まれない。
 
-#### 18.0.3 未確認または今後の課題
+#### 18.0.3 SotaAppManager補間lock protocol
 
-`InterpLockerClient`の完全なwire protocol、lock keyからtimer addressへの割当規則、
-ロック競合時の応答、異常終了時のロック解放、Pythonからの安全なproduction LED
-write、`VsmdSotaCommandTarget`の完全統合、VSMDが許容する最大read size、および
-全responseで末尾spaceが必ず付くかどうかは未確認である。
+Java bytecodeおよび通信解析で、補間lockは`vsmd_edison`の6498番とは別に、
+`SotaAppManager.jar`がlistenするTCP `127.0.0.1:6495`を使用すると確認した。
+1 requestごとに新しいconnectionを使用し、順序は次のとおりである。
+
+```text
+connect
+server → client: ac ed 00 05
+client → server: compact ASCII JSON + LF
+server → client: Java serialized object
+server closes connection
+```
+
+server-first headerを4 bytes exact readして検証する前にrequestを送ってはならない。
+request送信後のtimeoutまたは切断は処理結果が不明なため自動retryしない。responseは
+headerを含め4096 bytes以下に制限する。
+
+requestは`cmd`、続いて`subjson`の順のcompact JSONである。`subjson`の値はobject
+ではなく、inner JSONを格納したStringである。確認済みgolden vectorsは次のとおり。
+各行のwire末尾にはLF `0a`を1個だけ付け、CRLFは使用しない。
+
+```text
+{"cmd":"INTERP_LOCK","subjson":"{\"key\":\"fixture-key\",\"ids\":[14],\"isServo\":false}"}
+{"cmd":"INTERP_CNV_KEY_2_ADDR","subjson":"{\"key\":\"fixture-key\"}"}
+{"cmd":"INTERP_UNLOCK","subjson":"{\"key\":\"fixture-key\",\"ids\":[14],\"isServo\":false}"}
+```
+
+response decoderは汎用Java deserializerではなく、次の確認済みsubsetだけを受理する。
+
+```text
+OK:   ac ed 00 05 74 00 02 4f 4b
+NG:   ac ed 00 05 74 00 02 4e 47
+null: ac ed 00 05 70
+```
+
+`java.lang.Short`は77 bytesであり、先頭75 bytesが次のprefixと完全一致する場合だけ、
+最後の2 bytesをsigned big-endian S16としてdecodeする。
+
+```text
+ac ed 00 05 73 72 00 0f 6a 61 76 61 2e 6c 61 6e 67 2e 53 68 6f 72 74 68 4d 37 13 34 60 da 52 02 00 01 53 00 05 76 61 6c 75 65 78 72 00 10 6a 61 76 61 2e 6c 61 6e 67 2e 4e 75 6d 62 65 72 86 ac 95 1d 0b 94 e0 8b 02 00 00 78 70
+```
+
+| Short値 | 最後の2 bytes | full length |
+| ---: | --- | ---: |
+| 0 | `00 00` | 77 |
+| 496 | `01 f0` | 77 |
+| 502 | `01 f6` | 77 |
+| 558 | `02 2e` | 77 |
+
+未知token、未知class descriptor、切れたobject、余分なbyte、`OK`/`NG`以外のStringは
+拒否する。convertの`null`はkey未登録であり、496へのfallbackを行わない。
+
+timer addressは`496..558`、step 2の32 slotsである。lock成功後は必ず同じkeyで
+convertし、範囲とalignmentを検証する。convert失敗後は同じkey/IDsでUNLOCKを
+best-effortに1回だけ試みる。cleanup結果も不明ならoutcome unknownとし、retryしない。
+
+SotaAppManagerのlockは排他的mutexではなく、対象LEDのTriggerPointer stack操作で
+ある。unlockはrequest内のIDsをそのまま使うため、leaseは取得時のkeyとIDsを不変に
+保持する。同じLEDを複数keyで重ねてlockせず、同じLEDへ重複leaseを作らない。
+他processとの重複lockを安全に検出できず、non-LIFO unlockにはJava側stack破損の
+可能性があり、process異常終了時の自動解放もない。生成keyは識別子であり、機密情報を
+含めない。
+
+#### 18.0.4 未確認または今後の課題
+
+lock競合時の全応答、他processとの重複を安全に検出する方法、異常終了後の運用上の
+回復手順、Pythonからの安全なproduction LED write、`VsmdSotaCommandTarget`の
+完全統合、VSMDが許容する最大read size、および全responseで末尾spaceが必ず付くか
+どうかは未確認である。
 
 外部実装を互換性または低レベル仕様の根拠として参照するときは、リポジトリURL、検証済みの完全なcommit SHA、確認日、ライセンス、コピーしたコードか仕様だけを参考にした再実装か、およびレジスタ・ID・パケット・可動範囲ごとの検証状態を記録する。完全なcommit SHAを確認できない場合は推測せずTODOとする。
 
