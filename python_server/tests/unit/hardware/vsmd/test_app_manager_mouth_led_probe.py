@@ -41,6 +41,7 @@ from robot_controller.hardware.vsmd.sota_memory_map import (
     MASTER_CONTROL_PERIOD_ADDRESS,
     MOUTH_LED_SELECTOR_ADDRESS,
     SOTA_MOUTH_OUTPUT_ADDRESS,
+    SOTA_MOUTH_REMAINING_TIME_ADDRESS,
     SOTA_MOUTH_TARGET_ADDRESS,
     SOTA_MOUTH_TRIGGER_POINTER_ADDRESS,
 )
@@ -60,16 +61,37 @@ def command_from_request(request):
 
 
 class FakeVsmdMemory(VsmdMemoryAccess):
-    def __init__(self, selector=138, target=0, master_period=16666):
+    def __init__(
+        self,
+        selector=138,
+        target=0,
+        master_period=16666,
+        rise_states=None,
+        fall_states=None,
+        initial_output=0,
+    ):
         self.data = bytearray(b"\x00" * 65536)
         self.operations = []
         self.read_count = 0
         self.write_count = 0
         self.fail_read_number = None
         self.fail_write_numbers = set()
+        self.timer_phase = 0
+        self.active_state_index = 0
+        self.rise_states = list(
+            [(16, 0, LEASE_TIMER_ADDRESS, None)]
+            if rise_states is None
+            else rise_states
+        )
+        self.fall_states = list(
+            [(0, 0, LEASE_TIMER_ADDRESS, None)]
+            if fall_states is None
+            else fall_states
+        )
         self.set_u16(MOUTH_LED_SELECTOR_ADDRESS, selector)
         self.set_s16(SOTA_MOUTH_TARGET_ADDRESS, target)
-        self.set_s16(SOTA_MOUTH_OUTPUT_ADDRESS, 0)
+        self.set_s16(SOTA_MOUTH_OUTPUT_ADDRESS, initial_output)
+        self.set_u16(SOTA_MOUTH_REMAINING_TIME_ADDRESS, 0)
         self.set_u32(MASTER_CONTROL_PERIOD_ADDRESS, master_period)
         self.set_u16(
             SOTA_MOUTH_TRIGGER_POINTER_ADDRESS, PRE_TRIGGER_POINTER
@@ -80,6 +102,29 @@ class FakeVsmdMemory(VsmdMemoryAccess):
         self.operations.append(("READ", address, size))
         if self.fail_read_number == self.read_count:
             raise RuntimeError("fake VSMD read failed")
+        if (
+            address == SOTA_MOUTH_OUTPUT_ADDRESS
+            and self.timer_phase > 0
+        ):
+            active_states = (
+                self.rise_states
+                if self.timer_phase == 1
+                else self.fall_states
+            )
+            if not active_states:
+                return bytes(self.data[address:address + size])
+            state_index = min(
+                self.active_state_index, len(active_states) - 1
+            )
+            output, remaining, pointer, timer_value = (
+                active_states[state_index]
+            )
+            self.active_state_index += 1
+            self.set_s16(SOTA_MOUTH_OUTPUT_ADDRESS, output)
+            self.set_u16(SOTA_MOUTH_REMAINING_TIME_ADDRESS, remaining)
+            self.set_u16(SOTA_MOUTH_TRIGGER_POINTER_ADDRESS, pointer)
+            if timer_value is not None:
+                self.set_u16(LEASE_TIMER_ADDRESS, timer_value)
         return bytes(self.data[address:address + size])
 
     def write_bytes(self, address, payload):
@@ -89,6 +134,13 @@ class FakeVsmdMemory(VsmdMemoryAccess):
         if self.write_count in self.fail_write_numbers:
             raise RuntimeError("fake VSMD write failed")
         self.data[address:address + len(payload)] = payload
+        if address == LEASE_TIMER_ADDRESS and len(payload) == 2:
+            timer_value = struct.unpack("<H", payload)[0]
+            if timer_value != 0:
+                self.timer_phase += 1
+                self.active_state_index = 0
+            else:
+                self.timer_phase = 0
 
     def set_u16(self, address, value):
         self.data[address:address + 2] = struct.pack("<H", value)
@@ -180,17 +232,24 @@ def make_probe(
     selector=138,
     target=0,
     master_period=16666,
+    active_states=None,
+    fall_states=None,
+    initial_output=0,
     lock_response=SERIALIZED_OK,
     convert_response=None,
     unlock_response=SERIALIZED_OK,
     update_trigger_on_lock=True,
     after_unlock=None,
     sleep_function=None,
+    monotonic_function=None,
 ):
     raw_memory = FakeVsmdMemory(
         selector=selector,
         target=target,
         master_period=master_period,
+        rise_states=active_states,
+        fall_states=fall_states,
+        initial_output=initial_output,
     )
     app_transport = FakeAppManagerTransport(
         raw_memory,
@@ -208,12 +267,16 @@ def make_probe(
     sleeps = []
     if sleep_function is None:
         sleep_function = sleeps.append
+    if monotonic_function is None:
+        monotonic_function = lambda: 0.0
     probe = module.AppManagerMouthLedLiveProbe(
         VsmdTypedMemory(raw_memory),
         adapter,
         level=16,
         duration_ms=200,
+        hold_ms=500,
         sleep_function=sleep_function,
+        monotonic_function=monotonic_function,
     )
     return probe, raw_memory, app_transport, sleeps
 
@@ -260,6 +323,8 @@ def test_confirm_flag_absent_creates_no_transport_or_memory(capsys):
         ["--level", "17"],
         ["--duration-ms", "49"],
         ["--duration-ms", "201"],
+        ["--hold-ms", "99"],
+        ["--hold-ms", "1001"],
     ],
 )
 def test_cli_rejects_values_outside_hard_live_limits(arguments):
@@ -269,10 +334,20 @@ def test_cli_rejects_values_outside_hard_live_limits(arguments):
 
 def test_cli_accepts_minimum_live_level_and_duration():
     arguments = module.create_argument_parser().parse_args(
-        ["--level", "1", "--duration-ms", "50"]
+        ["--level", "1", "--duration-ms", "50", "--hold-ms", "100"]
     )
     assert arguments.level == 1
     assert arguments.duration_ms == 50
+    assert arguments.hold_ms == 100
+
+
+def test_hold_validation_rejects_bool_and_out_of_range_values():
+    with pytest.raises(BaseException):
+        module._validate_live_hold(True)
+    with pytest.raises(BaseException):
+        module._validate_live_hold(99)
+    with pytest.raises(BaseException):
+        module._validate_live_hold(1001)
 
 
 def test_preflight_reads_all_fields_before_lock_and_normal_flow_is_ordered():
@@ -284,10 +359,20 @@ def test_preflight_reads_all_fields_before_lock_and_normal_flow_is_ordered():
     assert result.locked_trigger_pointer == LEASE_TIMER_ADDRESS
     assert result.master_control_period_us == 16666
     assert result.timer_ticks == 12
+    assert result.active_state == module.ActiveInterpolationState(
+        16, 0, LEASE_TIMER_ADDRESS, 12, 0.0, 0
+    )
+    assert result.interpolation_reached_target is True
+    assert result.hold_completed is True
+    assert result.off_state == module.ActiveInterpolationState(
+        0, 0, LEASE_TIMER_ADDRESS, 12, 0.0, 0
+    )
+    assert result.fade_down_completed is True
+    assert result.interpolation_output_safe_zero is True
     assert result.postflight.selector == 138
     assert result.postflight.target == 0
     assert result.postflight.trigger_pointer == PRE_TRIGGER_POINTER
-    assert sleeps == [0.2]
+    assert sleeps == [0.2, 0.5, 0.2]
     assert commands(transport) == [
         INTERP_LOCK_COMMAND,
         INTERP_CONVERT_COMMAND,
@@ -307,6 +392,10 @@ def test_preflight_reads_all_fields_before_lock_and_normal_flow_is_ordered():
     assert memory.operations[7] == (
         "READ", SOTA_MOUTH_TRIGGER_POINTER_ADDRESS, 2
     )
+    assert (
+        "READ", SOTA_MOUTH_REMAINING_TIME_ADDRESS, 2
+    ) in memory.operations
+    assert ("READ", LEASE_TIMER_ADDRESS, 2) in memory.operations
     unlock_index = memory.operations.index(
         ("APP", INTERP_UNLOCK_COMMAND)
     )
@@ -327,9 +416,40 @@ def test_real_controller_receives_one_bounded_level_and_timer_duration():
         "WRITE", result.timer_address, struct.pack("<H", 12)
     )
     assert writes(memory).count(target_on) == 1
-    assert writes(memory).count(timer_on) == 1
+    assert writes(memory).count(timer_on) == 2
+    assert writes(memory).count(
+        ("WRITE", SOTA_MOUTH_TARGET_ADDRESS, struct.pack("<h", 0))
+    ) >= 2
     assert commands(transport).count(INTERP_LOCK_COMMAND) == 1
     assert commands(transport).count(INTERP_UNLOCK_COMMAND) == 1
+
+
+def test_rise_hold_fall_write_sequence_and_hold_contains_no_write():
+    probe, memory, unused_transport, unused_sleeps = make_probe()
+    sleep_observations = []
+
+    def observe_sleep(seconds):
+        sleep_observations.append((seconds, len(writes(memory))))
+
+    probe._sleep_function = observe_sleep
+    result = probe.run()
+    assert sleep_observations == [
+        (0.2, 3),
+        (0.5, 3),
+        (0.2, 5),
+    ]
+    assert writes(memory) == [
+        ("WRITE", MOUTH_LED_SELECTOR_ADDRESS, b"\x9c\x0c"),
+        ("WRITE", SOTA_MOUTH_TARGET_ADDRESS, b"\x10\x00"),
+        ("WRITE", LEASE_TIMER_ADDRESS, b"\x0c\x00"),
+        ("WRITE", SOTA_MOUTH_TARGET_ADDRESS, b"\x00\x00"),
+        ("WRITE", LEASE_TIMER_ADDRESS, b"\x0c\x00"),
+        ("WRITE", SOTA_MOUTH_TARGET_ADDRESS, b"\x00\x00"),
+        ("WRITE", LEASE_TIMER_ADDRESS, b"\x00\x00"),
+        ("WRITE", MOUTH_LED_SELECTOR_ADDRESS, b"\x8a\x00"),
+        ("WRITE", SOTA_MOUTH_TARGET_ADDRESS, b"\x00\x00"),
+    ]
+    assert result.hold_duration_ms == 500
 
 
 def test_timer_conversion_callback_runs_before_lock_or_write():
@@ -343,6 +463,249 @@ def test_timer_conversion_callback_runs_before_lock_or_write():
 
     probe.run(preflight_callback=observe_preflight)
     assert observations == [(16666, 12, 0, tuple())]
+
+
+def test_period_16667_converts_200_ms_to_11_ticks():
+    probe, memory, unused_transport, unused_sleeps = make_probe(
+        master_period=16667
+    )
+    result = probe.run()
+    assert result.timer_ticks == 11
+    timer_write = (
+        "WRITE", LEASE_TIMER_ADDRESS, struct.pack("<H", 11)
+    )
+    assert writes(memory).count(timer_write) == 2
+    assert result.active_state.timer_value == 11
+    assert result.off_state.timer_value == 11
+
+
+def test_nonzero_remaining_time_is_rechecked_with_a_finite_poll():
+    probe, unused_memory, transport, sleeps = make_probe(
+        active_states=[
+            (1, 1, LEASE_TIMER_ADDRESS, 999),
+            (16, 0, LEASE_TIMER_ADDRESS, 999),
+        ]
+    )
+    result = probe.run()
+    assert result.interpolation_reached_target is True
+    assert result.active_state.timer_value == 999
+    assert sleeps[:2] == [0.2, pytest.approx(0.016666)]
+    assert sleeps[-2:] == [0.5, 0.2]
+    assert commands(transport).count(INTERP_UNLOCK_COMMAND) == 1
+
+
+def test_active_timer_value_is_recorded_but_not_a_success_condition():
+    probe, unused_memory, unused_transport, unused_sleeps = make_probe(
+        active_states=[
+            (16, 0, LEASE_TIMER_ADDRESS, 0xFFFF),
+        ]
+    )
+    result = probe.run()
+    assert result.active_state.timer_value == 0xFFFF
+    assert result.interpolation_reached_target is True
+
+
+def test_fall_timer_value_is_recorded_but_not_a_success_condition():
+    probe, unused_memory, unused_transport, unused_sleeps = make_probe(
+        fall_states=[
+            (0, 0, LEASE_TIMER_ADDRESS, 0xFFFF),
+        ]
+    )
+    result = probe.run()
+    assert result.off_state.timer_value == 0xFFFF
+    assert result.fade_down_completed is True
+
+
+def test_complete_first_snapshot_is_accepted_after_deadline_elapsed():
+    times = iter([0.0, 0.0, 1.0, 1.0, 1.0, 2.0])
+    probe, unused_memory, unused_transport, unused_sleeps = make_probe(
+        monotonic_function=lambda: next(times)
+    )
+    result = probe.run()
+    assert result.active_state.snapshot_read_duration_ms == 1000.0
+    assert result.off_state.snapshot_read_duration_ms == 1000.0
+    assert result.active_state.poll_attempt == 0
+    assert result.off_state.poll_attempt == 0
+
+
+def test_snapshot_read_duration_and_poll_attempt_are_recorded():
+    current = [0.0]
+
+    def monotonic():
+        current[0] += 0.01
+        return current[0]
+
+    probe, unused_memory, unused_transport, unused_sleeps = make_probe(
+        monotonic_function=monotonic
+    )
+    result = probe.run()
+    assert result.active_state.snapshot_read_duration_ms == pytest.approx(
+        10.0
+    )
+    assert result.off_state.snapshot_read_duration_ms == pytest.approx(10.0)
+    assert result.active_state.poll_attempt == 0
+    assert result.off_state.poll_attempt == 0
+
+
+@pytest.mark.parametrize(
+    "active_state,error_text",
+    [
+        (
+            (1, 0, LEASE_TIMER_ADDRESS, 12),
+            "before reaching",
+        ),
+        (
+            (16, 0, PRE_TRIGGER_POINTER, 12),
+            "TriggerPointer",
+        ),
+    ],
+)
+def test_incomplete_active_state_fails_after_cleanup_and_unlock(
+    active_state, error_text
+):
+    probe, memory, transport, unused_sleeps = make_probe(
+        active_states=[active_state]
+    )
+    with pytest.raises(VsmdMouthLedStateError, match=error_text):
+        probe.run()
+    assert commands(transport).count(INTERP_UNLOCK_COMMAND) == 1
+    assert ("WRITE", MOUTH_LED_SELECTOR_ADDRESS, b"\x8a\x00") in writes(
+        memory
+    )
+    assert probe.postflight is not None
+    assert probe.routing_state_restored is True
+
+
+def test_active_completion_deadline_is_bounded_and_cleanup_runs():
+    times = iter([0.0, 0.0, 0.0, 1.0])
+    probe, memory, transport, sleeps = make_probe(
+        active_states=[
+            (1, 1, LEASE_TIMER_ADDRESS, 12),
+        ],
+        monotonic_function=lambda: next(times),
+    )
+    with pytest.raises(VsmdMouthLedStateError, match="deadline"):
+        probe.run()
+    assert sleeps == [0.2]
+    assert commands(transport).count(INTERP_UNLOCK_COMMAND) == 1
+    assert ("WRITE", MOUTH_LED_SELECTOR_ADDRESS, b"\x8a\x00") in writes(
+        memory
+    )
+
+
+def test_persistent_remaining_time_stops_after_three_rechecks():
+    probe, memory, transport, sleeps = make_probe(
+        active_states=[
+            (1, 1, LEASE_TIMER_ADDRESS, 12),
+        ],
+        monotonic_function=lambda: 0.0,
+    )
+    with pytest.raises(VsmdMouthLedStateError, match="deadline"):
+        probe.run()
+    assert memory.active_state_index == 4
+    assert len(sleeps) == 4
+    assert sleeps[0] == 0.2
+    assert commands(transport).count(INTERP_UNLOCK_COMMAND) == 1
+
+
+def test_active_state_read_failure_still_cleans_up_and_unlocks():
+    probe, memory, transport, unused_sleeps = make_probe()
+    memory.fail_read_number = 9
+    with pytest.raises(RuntimeError, match="read"):
+        probe.run()
+    assert commands(transport).count(INTERP_UNLOCK_COMMAND) == 1
+    assert ("WRITE", MOUTH_LED_SELECTOR_ADDRESS, b"\x8a\x00") in writes(
+        memory
+    )
+
+
+def test_active_error_and_cleanup_failure_preserve_both_errors():
+    probe, memory, transport, unused_sleeps = make_probe(
+        active_states=[
+            (1, 0, LEASE_TIMER_ADDRESS, 12),
+        ]
+    )
+    memory.fail_write_numbers.add(4)
+    with pytest.raises(VsmdMouthLedCleanupError) as caught:
+        probe.run()
+    assert isinstance(caught.value.operation_error, VsmdMouthLedStateError)
+    assert isinstance(caught.value.cleanup_error, RuntimeError)
+    assert commands(transport).count(INTERP_UNLOCK_COMMAND) == 1
+
+
+@pytest.mark.parametrize(
+    "fall_state,error_text,safe_zero",
+    [
+        ((1, 0, LEASE_TIMER_ADDRESS, 12), "before reaching", False),
+        ((0, 0, PRE_TRIGGER_POINTER, 12), "TriggerPointer", True),
+    ],
+)
+def test_fade_down_failure_cleans_up_and_unlocks_once(
+    fall_state, error_text, safe_zero
+):
+    probe, memory, transport, unused_sleeps = make_probe(
+        fall_states=[fall_state]
+    )
+    with pytest.raises(VsmdMouthLedStateError, match=error_text):
+        probe.run()
+    assert probe.fade_down_completed is False
+    assert probe.interpolation_output_safe_zero is safe_zero
+    assert probe.cleanup_completed is True
+    assert probe.routing_state_restored is True
+    assert commands(transport).count(INTERP_UNLOCK_COMMAND) == 1
+    assert ("WRITE", MOUTH_LED_SELECTOR_ADDRESS, b"\x8a\x00") in writes(
+        memory
+    )
+
+
+def test_fade_down_read_failure_cleans_up_and_unlocks_once():
+    probe, memory, transport, unused_sleeps = make_probe()
+    memory.fail_read_number = 13
+    with pytest.raises(RuntimeError, match="read"):
+        probe.run()
+    assert probe.fade_down_completed is False
+    assert probe.interpolation_output_safe_zero is False
+    assert probe.cleanup_completed is True
+    assert probe.routing_state_restored is True
+    assert commands(transport).count(INTERP_UNLOCK_COMMAND) == 1
+
+
+def test_fade_down_deadline_has_at_most_three_rechecks():
+    probe, memory, transport, sleeps = make_probe(
+        fall_states=[
+            (1, 1, LEASE_TIMER_ADDRESS, 12),
+        ],
+        monotonic_function=lambda: 0.0,
+    )
+    with pytest.raises(VsmdMouthLedStateError, match="fade-down.*deadline"):
+        probe.run()
+    assert len(probe.off_snapshots) == 4
+    assert [state.poll_attempt for state in probe.off_snapshots] == [
+        0, 1, 2, 3
+    ]
+    assert sleeps == [
+        0.2,
+        0.5,
+        0.2,
+        pytest.approx(0.016666),
+        pytest.approx(0.016666),
+        pytest.approx(0.016666),
+    ]
+    assert probe.cleanup_completed is True
+    assert commands(transport).count(INTERP_UNLOCK_COMMAND) == 1
+    assert memory.timer_phase == 0
+
+
+def test_fade_down_error_and_cleanup_failure_preserve_both_errors():
+    probe, memory, transport, unused_sleeps = make_probe(
+        fall_states=[(1, 0, LEASE_TIMER_ADDRESS, 12)]
+    )
+    memory.fail_write_numbers.add(6)
+    with pytest.raises(VsmdMouthLedCleanupError) as caught:
+        probe.run()
+    assert isinstance(caught.value.operation_error, VsmdMouthLedStateError)
+    assert isinstance(caught.value.cleanup_error, RuntimeError)
+    assert commands(transport).count(INTERP_UNLOCK_COMMAND) == 1
 
 
 def test_probe_instance_cannot_pulse_or_lock_twice():
@@ -467,7 +830,7 @@ def test_vsmd_write_failure_attempts_exactly_one_unlock():
 
 def test_cleanup_failure_attempts_exactly_one_unlock():
     probe, memory, transport, unused_sleeps = make_probe()
-    memory.fail_write_numbers.add(4)
+    memory.fail_write_numbers.add(6)
     with pytest.raises(RuntimeError, match="write"):
         probe.run()
     assert commands(transport).count(INTERP_UNLOCK_COMMAND) == 1
@@ -517,7 +880,7 @@ def test_release_failure_is_fail_closed_without_retry(
     assert commands(transport).count(INTERP_UNLOCK_COMMAND) == 1
     assert len(transport.requests) == 3
     assert probe.postflight is None
-    assert memory.read_count == 8
+    assert memory.read_count == 16
 
 
 class InconsistentLease(object):
@@ -573,12 +936,13 @@ def test_postflight_mismatch_is_failure(mutation):
     )
     with pytest.raises(VsmdMouthLedStateError, match="postflight"):
         probe.run()
+    assert probe.routing_state_restored is False
     assert commands(transport).count(INTERP_UNLOCK_COMMAND) == 1
 
 
 def test_postflight_read_failure_is_not_success():
     probe, memory, transport, unused_sleeps = make_probe()
-    memory.fail_read_number = 9
+    memory.fail_read_number = 17
     with pytest.raises(RuntimeError, match="read"):
         probe.run()
     assert commands(transport).count(INTERP_UNLOCK_COMMAND) == 1
@@ -593,6 +957,16 @@ def test_postflight_output_difference_is_display_only():
     )
     result = probe.run()
     assert result.postflight.output == 7
+
+
+def test_safe_zero_is_distinct_from_restoring_nonzero_preflight_output():
+    probe, unused_memory, unused_transport, unused_sleeps = make_probe(
+        initial_output=1
+    )
+    result = probe.run()
+    assert result.interpolation_output_safe_zero is True
+    assert result.postflight.output == 0
+    assert result.postflight.output != result.preflight.output
 
 
 def test_confirmed_cli_uses_supplied_endpoints_and_reports_success(capsys):
@@ -621,6 +995,7 @@ def test_confirmed_cli_uses_supplied_endpoints_and_reports_success(capsys):
             "--led-id", "14",
             "--level", "16",
             "--duration-ms", "200",
+            "--hold-ms", "500",
             "--confirm-live-write",
         ],
         vsmd_transport_factory=vsmd_factory,
@@ -633,11 +1008,28 @@ def test_confirmed_cli_uses_supplied_endpoints_and_reports_success(capsys):
     assert "result=success" in output
     assert "lease_state=released" in output
     assert "release_result=OK" in output
+    assert "transition_duration_ms=200" in output
+    assert "hold_duration_ms=500" in output
+    assert "rise_output=16" in output
+    assert "rise_remaining_time=0" in output
+    assert "rise_trigger_pointer=0x01f6" in output
+    assert "rise_timer_value=12" in output
+    assert "rise_snapshot_read_duration_ms=" in output
+    assert "rise_poll_attempt=0" in output
+    assert "interpolation_reached_target=true" in output
+    assert "hold_completed=true" in output
+    assert "off_output=0" in output
+    assert "off_remaining_time=0" in output
+    assert "off_trigger_pointer=0x01f6" in output
+    assert "fade_down_completed=true" in output
+    assert "interpolation_output_safe_zero=true" in output
     assert "post_output=0" in output
     assert "master_control_period_us=16666" in output
     assert "timer_ticks=12" in output
     assert "control_sequence_completed=true" in output
     assert "physical_illumination=not_verified" in output
+    assert "routing_state_restored=true" in output
+    assert "interpolation_output_restored=true" in output
     assert vsmd_calls[0]["host"] == "127.0.0.3"
     assert vsmd_calls[0]["port"] == 16498
     assert app_calls == [

@@ -295,7 +295,8 @@ TriggerPointer変更・復元だけで、selector、Target、Outputへのwrite�
 しない。Composition Root、server起動経路、既定Backendには接続せず、既定
 `UnavailableVsmdLedLock`も変更しない。
 
-初期版はLED ID 14、level 1..16、duration 50..200 ms、1 pulseだけをコードで
+初期版はLED ID 14、level 1..16、transition duration 50..200 ms、hold duration
+100..1000 ms（既定500 ms）、1 pulseだけをコードで
 強制する。preflightでselector `0x008a`、Target 0、Output、TriggerPointerをreadし、
 安全条件を満たす場合だけLOCKとCONVERTを行う。lock後は確認済み
 `InterpLEDTriggerPointer[14]`アドレス`0x0b9c`がleaseのtimer addressと一致するまで
@@ -320,11 +321,32 @@ CLIの`result=success`はprotocol、memory operation、cleanup、release、postf
 成功だけを表す。物理発光の自動確認ではないため、
 `control_sequence_completed=true`と`physical_illumination=not_verified`も表示する。
 
+修正版live probeは上昇transitionの完了を確認してから指定時間をwriteなしで保持し、
+既存controllerの`turn_off(transition_duration_ms)`でTarget 0と正のtimer ticksを
+設定して下降transitionも確認する。timer 0によるcleanupだけではOutputが0へ戻らない
+ことが実機observerで確認されたため、selectorを復元する前に正規の下降補間を行う。
+上昇・下降ともOutput、RemainingTime、TriggerPointer、lease timer値をreadし、
+Outputがphaseの要求値、RemainingTimeが0、TriggerPointerがlease timer addressの
+場合だけ完了とする。timer値は診断用に記録するが成功条件には含めない。
+RemainingTimeが非0なら最大3回だけ再確認する。
+追加deadlineは`(timer_ticks + 2) * MasterCtrlPeriod`を基準に50～500 msへ制限し、
+最初の4-read snapshotは途中のdeadline判定で破棄しない。deadlineは次のsnapshotを
+開始するかだけを制御し、各snapshotの取得時間とpoll attemptを記録する。各readは
+既存read timeoutで有界である。未完了・deadline・read失敗でも既存cleanupと
+単一UNLOCKを通り、retry、再LOCK、UNLOCK再送は行わない。
+
+selector、Target、TriggerPointerの復元は`routing_state_restored`として報告する。
+Outputはselector復元後に物理mouth LEDへ接続されないため復元条件にはせず、
+preflight値との一致を`interpolation_output_restored`で別に表示する。cleanup前の
+下降確認でOutput 0を取得した場合だけ`interpolation_output_safe_zero=true`とする。
+下降確認に失敗してもselector復元を優先し、physical illuminationは自動成功扱いに
+しない。rise/hold/fall修正版の実機write試験はまだ実行していない。
+
 ```powershell
 python -m robot_controller.hardware.vsmd.app_manager_mouth_led_probe `
   --app-manager-host 127.0.0.1 --app-manager-port 16495 `
   --vsmd-host 127.0.0.1 --vsmd-port 16498 `
-  --led-id 14 --level 16 --duration-ms 200 `
+  --led-id 14 --level 16 --duration-ms 200 --hold-ms 500 `
   --confirm-live-write
 ```
 
@@ -345,7 +367,10 @@ python -m robot_controller.hardware.vsmd.mouth_led_observer `
 ```
 
 要求intervalと`time.monotonic()`で測定した実intervalを両方記録する。通常の
-`aplay`観測は今後、人間が手動で実行する。
+`aplay`観測は人間が手動で実行する。full observerは各addressを逐次readするため
+sampling intervalはbest-effortで、CSV 1行は原子的snapshotではない。SSH tunnel
+経由の20 ms指定では実測約350 msだった。AudioDiffだけを高頻度で追うfocused modeは
+将来課題とする。
 
 ## 8. read-only probe
 

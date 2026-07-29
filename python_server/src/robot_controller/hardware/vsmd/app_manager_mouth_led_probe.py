@@ -61,6 +61,7 @@ from robot_controller.hardware.vsmd.sota_memory_map import (
     MOUTH_LED_SELECTOR_ADDRESS,
     SOTA_MOUTH_GLOBAL_LED_ID,
     SOTA_MOUTH_OUTPUT_ADDRESS,
+    SOTA_MOUTH_REMAINING_TIME_ADDRESS,
     SOTA_MOUTH_TARGET_ADDRESS,
     SOTA_MOUTH_TRIGGER_POINTER_ADDRESS,
 )
@@ -72,7 +73,14 @@ MIN_LIVE_LEVEL = 1
 MAX_LIVE_LEVEL = 16
 MIN_LIVE_DURATION_MS = 50
 MAX_LIVE_DURATION_MS = 200
+MIN_LIVE_HOLD_MS = 100
+MAX_LIVE_HOLD_MS = 1000
+DEFAULT_LIVE_HOLD_MS = 500
 PROBE_LOCAL_LOCK_KEY = "app-manager-mouth-led-live-probe"
+MAX_ACTIVE_STATE_RECHECKS = 3
+MIN_ACTIVE_COMPLETION_GRACE_SECONDS = 0.05
+MAX_ACTIVE_COMPLETION_GRACE_SECONDS = 0.5
+MAX_ACTIVE_POLL_INTERVAL_SECONDS = 0.05
 
 
 _ProbeSnapshotBase = collections.namedtuple(
@@ -87,6 +95,25 @@ class ProbeSnapshot(_ProbeSnapshotBase):
     __slots__ = ()
 
 
+_ActiveInterpolationStateBase = collections.namedtuple(
+    "_ActiveInterpolationStateBase",
+    [
+        "output",
+        "remaining_time",
+        "trigger_pointer",
+        "timer_value",
+        "snapshot_read_duration_ms",
+        "poll_attempt",
+    ],
+)
+
+
+class ActiveInterpolationState(_ActiveInterpolationStateBase):
+    """Immutable, complete interpolation snapshot from four VSMD reads."""
+
+    __slots__ = ()
+
+
 _ProbeResultBase = collections.namedtuple(
     "_ProbeResultBase",
     [
@@ -95,6 +122,15 @@ _ProbeResultBase = collections.namedtuple(
         "timer_address",
         "master_control_period_us",
         "timer_ticks",
+        "active_state",
+        "interpolation_reached_target",
+        "active_snapshots",
+        "hold_duration_ms",
+        "hold_completed",
+        "off_state",
+        "off_snapshots",
+        "fade_down_completed",
+        "interpolation_output_safe_zero",
         "postflight",
         "pulse_completed",
         "cleanup_completed",
@@ -151,25 +187,32 @@ class AppManagerMouthLedLiveProbe(object):
         led_lock,
         level,
         duration_ms,
+        hold_ms=DEFAULT_LIVE_HOLD_MS,
         sleep_function=time.sleep,
+        monotonic_function=time.monotonic,
         controller_factory=SotaMouthLedController,
     ):
-        # type: (VsmdTypedMemory, AppManagerVsmdLedLock, int, int, typing.Any, typing.Any) -> None
+        # type: (VsmdTypedMemory, AppManagerVsmdLedLock, int, int, int, typing.Any, typing.Any, typing.Any) -> None
         if not isinstance(memory, VsmdTypedMemory):
             raise TypeError("memory must be VsmdTypedMemory")
         if not isinstance(led_lock, AppManagerVsmdLedLock):
             raise TypeError("led_lock must be AppManagerVsmdLedLock")
         _validate_live_level(level)
         _validate_live_duration(duration_ms)
+        _validate_live_hold(hold_ms)
         if not callable(sleep_function):
             raise TypeError("sleep_function must be callable")
+        if not callable(monotonic_function):
+            raise TypeError("monotonic_function must be callable")
         if not callable(controller_factory):
             raise TypeError("controller_factory must be callable")
         self._memory = memory
         self._led_lock = led_lock
         self._level = level
         self._duration_ms = duration_ms
+        self._hold_ms = hold_ms
         self._sleep_function = sleep_function
+        self._monotonic_function = monotonic_function
         self._controller_factory = controller_factory
         self._has_run = False
         self.preflight = None  # type: typing.Optional[ProbeSnapshot]
@@ -177,6 +220,15 @@ class AppManagerMouthLedLiveProbe(object):
         self.locked_trigger_pointer = None  # type: typing.Optional[int]
         self.master_control_period_us = None  # type: typing.Optional[int]
         self.timer_ticks = None  # type: typing.Optional[int]
+        self.active_state = None  # type: typing.Optional[ActiveInterpolationState]
+        self.active_snapshots = []  # type: typing.List[ActiveInterpolationState]
+        self.interpolation_reached_target = False
+        self.hold_completed = False
+        self.off_state = None  # type: typing.Optional[ActiveInterpolationState]
+        self.off_snapshots = []  # type: typing.List[ActiveInterpolationState]
+        self.fade_down_completed = False
+        self.interpolation_output_safe_zero = False
+        self.routing_state_restored = False
         self.lease = None  # type: typing.Optional[AppManagerVsmdLedLockLease]
         self.pulse_completed = False
         self.cleanup_completed = False
@@ -248,6 +300,33 @@ class AppManagerMouthLedLiveProbe(object):
             controller.disable_voice_sync()
             controller.set_brightness(self._level, self._duration_ms)
             self._sleep_function(self._duration_ms / 1000.0)
+            (
+                self.active_state,
+                self.active_snapshots,
+            ) = self._wait_for_interpolation(
+                timer_address,
+                self._level,
+                "rise",
+            )
+            self.interpolation_reached_target = True
+            self._sleep_function(self._hold_ms / 1000.0)
+            self.hold_completed = True
+            controller.turn_off(self._duration_ms)
+            self._sleep_function(self._duration_ms / 1000.0)
+            try:
+                self.off_state, self.off_snapshots = (
+                    self._wait_for_interpolation(
+                        timer_address,
+                        0,
+                        "fade-down",
+                    )
+                )
+            finally:
+                if self.off_state is not None:
+                    self.interpolation_output_safe_zero = (
+                        self.off_state.output == 0
+                    )
+            self.fade_down_completed = True
             self.pulse_completed = True
         except BaseException as error:
             operation_error = error
@@ -273,22 +352,42 @@ class AppManagerMouthLedLiveProbe(object):
             ) from cleanup_error
         if cleanup_error is not None:
             raise cleanup_error
-        if operation_error is not None:
-            raise operation_error
 
         _validate_release_success(self.lease)
 
         # Failed/unknown release exits above. Do not perform extra reads in
         # that state: the server stack may still own the LED and success is
         # already impossible. The probe never attempts recovery or retry.
-        self.postflight = self._read_snapshot()
-        self._validate_postflight(self.preflight, self.postflight)
+        postflight_error = None  # type: typing.Optional[BaseException]
+        try:
+            self.postflight = self._read_snapshot()
+            self._validate_postflight(self.preflight, self.postflight)
+            self.routing_state_restored = True
+        except BaseException as error:
+            postflight_error = error
+        if operation_error is not None and postflight_error is not None:
+            raise VsmdMouthLedCleanupError(
+                operation_error, postflight_error
+            ) from postflight_error
+        if postflight_error is not None:
+            raise postflight_error
+        if operation_error is not None:
+            raise operation_error
         return ProbeResult(
             self.preflight,
             self.locked_trigger_pointer,
             timer_address,
             self.master_control_period_us,
             self.timer_ticks,
+            self.active_state,
+            self.interpolation_reached_target,
+            tuple(self.active_snapshots),
+            self._hold_ms,
+            self.hold_completed,
+            self.off_state,
+            tuple(self.off_snapshots),
+            self.fade_down_completed,
+            self.interpolation_output_safe_zero,
             self.postflight,
             self.pulse_completed,
             self.cleanup_completed,
@@ -302,6 +401,90 @@ class AppManagerMouthLedLiveProbe(object):
             self._memory.read_s16(SOTA_MOUTH_OUTPUT_ADDRESS),
             self._memory.read_u16(SOTA_MOUTH_TRIGGER_POINTER_ADDRESS),
         )
+
+    def _read_active_state(self, timer_address, poll_attempt):
+        # type: (int, int) -> ActiveInterpolationState
+        started_at = self._monotonic_function()
+        output = self._memory.read_s16(SOTA_MOUTH_OUTPUT_ADDRESS)
+        remaining_time = self._memory.read_u16(
+            SOTA_MOUTH_REMAINING_TIME_ADDRESS
+        )
+        trigger_pointer = self._memory.read_u16(
+            SOTA_MOUTH_TRIGGER_POINTER_ADDRESS
+        )
+        timer_value = self._memory.read_u16(timer_address)
+        finished_at = self._monotonic_function()
+        return ActiveInterpolationState(
+            output,
+            remaining_time,
+            trigger_pointer,
+            timer_value,
+            max(0.0, (finished_at - started_at) * 1000.0),
+            poll_attempt,
+        )
+
+    def _wait_for_interpolation(
+        self, timer_address, expected_output, phase_name
+    ):
+        # type: (int, int, str) -> typing.Tuple[ActiveInterpolationState, typing.List[ActiveInterpolationState]]
+        """Read complete snapshots and bound whether another poll may start."""
+        period_seconds = self.master_control_period_us / 1000000.0
+        grace_seconds = min(
+            MAX_ACTIVE_COMPLETION_GRACE_SECONDS,
+            max(
+                MIN_ACTIVE_COMPLETION_GRACE_SECONDS,
+                (self.timer_ticks + 2) * period_seconds,
+            ),
+        )
+        poll_interval = min(
+            MAX_ACTIVE_POLL_INTERVAL_SECONDS,
+            max(period_seconds, 0.001),
+        )
+        deadline = self._monotonic_function() + grace_seconds
+        poll_attempt = 0
+        snapshots = []  # type: typing.List[ActiveInterpolationState]
+        while True:
+            state = self._read_active_state(timer_address, poll_attempt)
+            snapshots.append(state)
+            if phase_name == "rise":
+                self.active_state = state
+                self.active_snapshots = list(snapshots)
+            else:
+                self.off_state = state
+                self.off_snapshots = list(snapshots)
+                self.interpolation_output_safe_zero = state.output == 0
+            if (
+                state.output == expected_output
+                and state.remaining_time == 0
+                and state.trigger_pointer == timer_address
+            ):
+                return state, snapshots
+            if state.trigger_pointer != timer_address:
+                raise VsmdMouthLedStateError(
+                    "{0} TriggerPointer did not match the lease timer".format(
+                        phase_name
+                    )
+                )
+            if state.remaining_time == 0:
+                raise VsmdMouthLedStateError(
+                    (
+                        "{0} interpolation ended before reaching "
+                        "output {1}"
+                    ).format(phase_name, expected_output)
+                )
+            now = self._monotonic_function()
+            if (
+                poll_attempt >= MAX_ACTIVE_STATE_RECHECKS
+                or now >= deadline
+            ):
+                raise VsmdMouthLedStateError(
+                    "{0} interpolation completion deadline exceeded".format(
+                        phase_name
+                    )
+                )
+            remaining = deadline - now
+            self._sleep_function(min(poll_interval, remaining))
+            poll_attempt += 1
 
     @staticmethod
     def _validate_preflight(snapshot):
@@ -384,6 +567,19 @@ def _validate_live_duration(value):
     ):
         raise VsmdValidationError(
             "duration-ms must be between 50 and 200"
+        )
+
+
+def _validate_live_hold(value):
+    # type: (int) -> None
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or value < MIN_LIVE_HOLD_MS
+        or value > MAX_LIVE_HOLD_MS
+    ):
+        raise VsmdValidationError(
+            "hold-ms must be between 100 and 1000"
         )
 
 
@@ -486,6 +682,15 @@ def create_argument_parser():
         ),
         default=MAX_LIVE_DURATION_MS,
     )
+    parser.add_argument(
+        "--hold-ms",
+        type=_bounded_integer(
+            "hold-ms",
+            MIN_LIVE_HOLD_MS,
+            MAX_LIVE_HOLD_MS,
+        ),
+        default=DEFAULT_LIVE_HOLD_MS,
+    )
     parser.add_argument("--confirm-live-write", action="store_true")
     return parser
 
@@ -527,6 +732,53 @@ def _print_lease(lease, output):
     )
 
 
+def _print_interpolation_state(prefix, state, reached_target, output):
+    # type: (str, typing.Optional[ActiveInterpolationState], bool, typing.Any) -> None
+    if state is None:
+        return
+    print("{0}_output={1}".format(prefix, state.output), file=output)
+    print(
+        "{0}_remaining_time={1}".format(
+            prefix, state.remaining_time
+        ),
+        file=output,
+    )
+    print(
+        "{0}_trigger_pointer=0x{1:04x}".format(
+            prefix, state.trigger_pointer
+        ),
+        file=output,
+    )
+    print(
+        "{0}_timer_value={1}".format(prefix, state.timer_value),
+        file=output,
+    )
+    print(
+        "{0}_snapshot_read_duration_ms={1:.3f}".format(
+            prefix, state.snapshot_read_duration_ms
+        ),
+        file=output,
+    )
+    print(
+        "{0}_poll_attempt={1}".format(prefix, state.poll_attempt),
+        file=output,
+    )
+    print(
+        "{0}_reached_target={1}".format(
+            prefix,
+            str(reached_target is True).lower()
+        ),
+        file=output,
+    )
+    if prefix == "rise":
+        print(
+            "interpolation_reached_target={0}".format(
+                str(reached_target is True).lower()
+            ),
+            file=output,
+        )
+
+
 def _print_timer_preflight(master_control_period_us, timer_ticks):
     # type: (int, int) -> None
     """Print the verified conversion before any lock or VSMD write."""
@@ -536,6 +788,7 @@ def _print_timer_preflight(master_control_period_us, timer_ticks):
         )
     )
     print("timer_ticks={0}".format(timer_ticks))
+    print("rise_timer_ticks={0}".format(timer_ticks))
 
 
 def main(
@@ -559,6 +812,8 @@ def main(
     print("led_id={0}".format(arguments.led_id))
     print("level={0}".format(arguments.level))
     print("duration_ms={0}".format(arguments.duration_ms))
+    print("transition_duration_ms={0}".format(arguments.duration_ms))
+    print("hold_duration_ms={0}".format(arguments.hold_ms))
     print(
         "app_manager_endpoint={0}:{1}".format(
             arguments.app_manager_host, arguments.app_manager_port
@@ -596,6 +851,7 @@ def main(
                 adapter,
                 arguments.level,
                 arguments.duration_ms,
+                hold_ms=arguments.hold_ms,
                 sleep_function=sleep_function,
             )
             result = probe.run(
@@ -623,6 +879,44 @@ def main(
                     ),
                     file=sys.stderr,
                 )
+            _print_interpolation_state(
+                "rise",
+                probe.active_state,
+                probe.interpolation_reached_target,
+                sys.stderr,
+            )
+            _print_interpolation_state(
+                "off",
+                probe.off_state,
+                probe.fade_down_completed,
+                sys.stderr,
+            )
+            print(
+                "hold_completed={0}".format(
+                    str(probe.hold_completed).lower()
+                ),
+                file=sys.stderr,
+            )
+            print(
+                "fade_down_completed={0}".format(
+                    str(probe.fade_down_completed).lower()
+                ),
+                file=sys.stderr,
+            )
+            print(
+                "interpolation_output_safe_zero={0}".format(
+                    str(
+                        probe.interpolation_output_safe_zero
+                    ).lower()
+                ),
+                file=sys.stderr,
+            )
+            print(
+                "routing_state_restored={0}".format(
+                    str(probe.routing_state_restored).lower()
+                ),
+                file=sys.stderr,
+            )
             _print_lease(probe.lease, sys.stderr)
         print("result=failure", file=sys.stderr)
         print(
@@ -640,6 +934,35 @@ def main(
             result.locked_trigger_pointer
         )
     )
+    _print_interpolation_state(
+        "rise",
+        result.active_state,
+        result.interpolation_reached_target,
+        sys.stdout,
+    )
+    print("hold_duration_ms={0}".format(result.hold_duration_ms))
+    print(
+        "hold_completed={0}".format(
+            str(result.hold_completed).lower()
+        )
+    )
+    print("fall_timer_ticks={0}".format(result.timer_ticks))
+    _print_interpolation_state(
+        "off",
+        result.off_state,
+        result.fade_down_completed,
+        sys.stdout,
+    )
+    print(
+        "fade_down_completed={0}".format(
+            str(result.fade_down_completed).lower()
+        )
+    )
+    print(
+        "interpolation_output_safe_zero={0}".format(
+            str(result.interpolation_output_safe_zero).lower()
+        )
+    )
     print(
         "pulse_completed={0}".format(
             str(result.pulse_completed).lower()
@@ -655,6 +978,14 @@ def main(
     _print_lease(probe.lease, sys.stdout)
     _print_snapshot("post", result.postflight, sys.stdout)
     print("state_restored=true")
+    print("routing_state_restored=true")
+    print(
+        "interpolation_output_restored={0}".format(
+            str(
+                result.postflight.output == result.preflight.output
+            ).lower()
+        )
+    )
     print("result=success")
     return 0
 

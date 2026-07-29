@@ -691,6 +691,34 @@ fail-closedをFakeで検証した。修正版による実機writeとphysical ill
 先timer、RemainingTimeを観測する`mouth_led_observer`はTCP 6498のreadだけを使用する。
 TCP 6495、LOCK、write、selector変更は行わず、CSVをstdoutへ出力する。
 
+2026-07-29の実機observerでは`MasterCtrlPeriod=16667 µs`、selector `0x008a`、
+Target 0、Output 1、TriggerPointer `0x01f4`、pointer先`0xffff`、RemainingTime 0を
+確認した。通常の`aplay`中にはAudioDiffが3816、935、11146、166などへ変化した。
+capture上、observer自身はTCP 6498のreadだけを送り、VSMD writeとTCP 6495接続は
+なかった。実機periodでは200 msは11 ticks (`0b00`)となる。Fake dry-runの
+16666 µsでは12 ticks (`0c00`)であり、period差による正常な相違である。
+
+full observerは8 addressを逐次readするため、指定intervalはbest-effortである。
+SSH tunnel経由では20 ms指定に対して実測約350 msであり、CSV 1行は原子的snapshot
+ではない。将来、AudioDiffだけを高頻度readするfocused modeを別途検討する。
+
+上記observerで、timer値0は`InterpLEDOutput[14]`を0へ戻す操作ではないことも
+実機確認した。このためlive probe候補は、上昇補間の完了後に100～1000 ms
+（既定500 ms）保持し、selectorをAudioDiffへ復元する前に既存controllerの
+`turn_off()`を使ってTarget 0と正のcontrol ticksを書き、下降補間の完了を確認する。
+transition duration（50～200 ms）とhold durationは別のCLI値として扱う。
+
+上昇・下降とも、指定transition durationを待ってからOutput、RemainingTime、
+TriggerPointer、lease timerの4 readを1つの完結snapshotとして取得する。成功条件は
+Outputが各phaseのTarget、RemainingTimeが0、TriggerPointerがlease timer addressに
+一致することであり、timer slot値は記録だけを行う。次の再確認を開始できるのは
+deadline内かつ最大3回までである。各snapshotには取得時間とpoll attemptを記録する。
+下降失敗時も既存cleanupでselector復元を優先し、UNLOCKは1回だけ試みる。
+
+このrise/hold/fall修正版はFakeによる検証までであり、実機writeも物理発光試験も
+まだ実行していない。CLIの`physical_illumination=not_verified`を維持し、
+physical illumination gateは未完了のままとする。
+
 #### 18.0.6 未確認または今後の課題
 
 lock競合時の全応答、他processとの重複を安全に検出する方法、異常終了後の運用上の

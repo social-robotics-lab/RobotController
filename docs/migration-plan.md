@@ -249,15 +249,20 @@ lock取得を`VsmdLedLockUnavailableError`で拒否し、memory writeを行わ�
 * [x] 明示確認必須のLED 14単発live probe候補をFakeで検証
 * [x] `MasterCtrlPeriod`によるcontrol ticks変換を実装しFakeで検証
 * [x] TCP 6498 read-only mouth LED observerをFakeで検証
+* [x] rise完了、有限hold、正規timerによるfade-downをFakeで検証
 * [ ] lock競合、non-LIFO、異常終了時の安全な回復手順
 * [ ] `UnavailableVsmdLedLock`からproduction candidateへの切替
-* [ ] live probeによるactual LED pulse試験
+* [ ] rise/hold/fall修正版live probeによるactual LED pulse試験
 * [ ] Composition Root統合とproduction実機LED write
 
 2026-07-29の旧timer実装によるlive試験はlock、write、cleanup、restorationに成功
 したが、Outputは1までで物理LEDは点灯しなかったため、actual LED pulse試験は未完了
-のままである。修正したcontrol ticks変換とread-only observerはFake検証までで、
-修正版の実機writeは実施していない。
+のままである。修正したcontrol ticks変換はFake検証までで、修正版の実機writeは
+実施していない。
+
+通常`aplay`のread-only observerではAudioDiff変化とTCP 6498 read-only動作を実機
+確認した。full observerのsamplingはbest-effortで非原子的であり、AudioDiff focused
+modeは将来課題である。live probeのcleanup直前補間完了判定はFake検証までとする。
 
 ### 試験順序
 
