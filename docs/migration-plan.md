@@ -244,10 +244,11 @@ lock取得を`VsmdLedLockUnavailableError`で拒否し、memory writeを行わ�
 * [x] server-first header、4096-byte上限、自動retryなしのTCP Transport
 * [x] unique key、immutable IDs、single-releaseの`AppManagerLedLockLease`
 * [x] convert失敗時のbest-effort UNLOCKをFake transportで検証
-* [ ] 実機6495接続によるPython candidateのread/write検証
+* [x] 2026-07-29に実機6495でLED 14 lock-only取得・変換・解放を確認
+* [x] `VsmdLedLock` adapter、lease-aware timer、socketなしdry-runをFakeで検証
 * [ ] lock競合、non-LIFO、異常終了時の安全な回復手順
 * [ ] `UnavailableVsmdLedLock`からproduction candidateへの切替
-* [ ] Composition Root統合と実機LED write
+* [ ] actual LED pulse試験、Composition Root統合、実機LED write
 
 ### 試験順序
 

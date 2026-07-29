@@ -155,6 +155,25 @@ class VsmdUnexpectedMouthSelectorError(VsmdLedError):
     """The mouth selector has an unrecognized value and was not modified."""
 
 
+class VsmdMouthLedCleanupError(VsmdLedError):
+    """A mouth-LED operation and its mandatory cleanup both failed."""
+
+    def __init__(self, operation_error, cleanup_error):
+        # type: (BaseException, BaseException) -> None
+        self.operation_error = operation_error
+        self.cleanup_error = cleanup_error
+        VsmdLedError.__init__(
+            self,
+            (
+                "mouth LED operation failed with {0}; cleanup failed with "
+                "{1}"
+            ).format(
+                type(operation_error).__name__,
+                type(cleanup_error).__name__,
+            ),
+        )
+
+
 class AppManagerError(VsmdError):
     """Base class for SotaAppManager interpolation-lock failures."""
 

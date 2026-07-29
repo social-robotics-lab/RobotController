@@ -6,6 +6,7 @@ import pytest
 
 from robot_controller.hardware.vsmd.errors import (
     VsmdLedLockUnavailableError,
+    VsmdMouthLedCleanupError,
     VsmdUnexpectedMouthSelectorError,
     VsmdValidationError,
 )
@@ -214,8 +215,10 @@ def test_interpolation_failure_immediately_restores_and_releases():
         VsmdTypedMemory(memory), timer, led_lock=FakeLock(events)
     )
     controller.disable_voice_sync()
-    with pytest.raises(RuntimeError):
+    with pytest.raises(VsmdMouthLedCleanupError) as caught:
         controller.set_brightness(16, 1)
+    assert isinstance(caught.value.operation_error, RuntimeError)
+    assert isinstance(caught.value.cleanup_error, RuntimeError)
     assert unpack_u16(memory, MOUTH_LED_SELECTOR_ADDRESS) == 138
     assert unpack_s16(memory, SOTA_MOUTH_TARGET_ADDRESS) == 7
     assert not controller.is_voice_sync_disabled

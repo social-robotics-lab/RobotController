@@ -262,6 +262,32 @@ TriggerPointer stack操作なので、同じLEDを複数keyで重ねず、lease�
 しない。実機LED writeは引き続き無効である。wire詳細とgolden vectorsは
 [`protocol-compatibility.md`](protocol-compatibility.md)へ集約する。
 
+### 7.2 mouth LED抽象へのadapter準備
+
+`AppManagerVsmdLedLock`は`VsmdLedLock`を実装し、取得した
+`AppManagerLedLockLease`を引数なしで解放できるadapter leaseとして返す。既存
+`SotaMouthLedController`はleaseを返すlockと従来どおり`None`を返すFake lockの
+双方を扱う。`AppManagerLeaseInterpolationTimer`はactive leaseから取得したtimer
+addressへdurationを書き、固定LED indexからtimer addressを推測しない。同一adapter
+内の重複LED leaseはnetwork request前に拒否するが、他processとのmutexは保証しない。
+
+VSMD処理とcleanupの双方が失敗した場合は`VsmdMouthLedCleanupError`に元処理と
+cleanupの両例外を保持し、release失敗を隠さない。adapterとtimerは未使用の
+production候補であり、Composition Rootと既定`UnavailableVsmdLedLock`は変更しない。
+
+socketを生成しない手動診断は次で実行できる。
+
+```powershell
+python -m robot_controller.hardware.vsmd.app_manager_mouth_led_dry_run
+```
+
+このdry-runはFake AppManager transportとFake VSMD memoryへ既存controllerが生成した
+read/writeを記録するだけで、`live_network=false`、`live_write=false`である。
+2026-07-29のlock-only実機試験ではtimer address `0x01f6`を取得し、TriggerPointerが
+`0x01f4 → 0x01f6 → 0x01f4`と復元された。観測writeはtimer初期化と
+TriggerPointer変更・復元だけで、selector、Target、Outputへのwriteはなかった。
+actual LED pulse testは未実施である。
+
 ## 8. read-only probe
 
 人間が実機で手動実行する場合だけ、次を使用する。2026-07-28にはWindows 11 /

@@ -11,6 +11,7 @@ import typing
 
 from robot_controller.hardware.vsmd.errors import (
     VsmdLedLockUnavailableError,
+    VsmdMouthLedCleanupError,
     VsmdMouthLedStateError,
     VsmdUnexpectedMouthSelectorError,
     VsmdValidationError,
@@ -30,12 +31,21 @@ DEFAULT_MOUTH_LED_LOCK_KEY = "robot-controller-python-mouth"
 
 
 class VsmdLedLock(abc.ABC):
-    """Exclusive VSMD LED interpolation ownership boundary."""
+    """VSMD LED interpolation lock boundary.
+
+    Implementations may coordinate TriggerPointer updates without providing a
+    cross-process mutex.
+    """
 
     @abc.abstractmethod
     def acquire(self, key, led_ids):
-        # type: (str, typing.Sequence[int]) -> None
-        """Acquire all requested LED IDs or raise without partial success."""
+        # type: (str, typing.Sequence[int]) -> typing.Any
+        """Acquire the requested IDs and optionally return an owned lease.
+
+        Legacy and fake implementations may return ``None``. Lease-aware
+        implementations return an object whose parameterless ``release()``
+        releases the exact key and LED IDs captured during acquisition.
+        """
         raise NotImplementedError
 
     @abc.abstractmethod
@@ -121,6 +131,7 @@ class SotaMouthLedController(object):
         self._led_ids = (SOTA_MOUTH_GLOBAL_LED_ID,)
         self._state_lock = threading.RLock()
         self._active = False
+        self._lock_lease = None  # type: typing.Any
         self._original_selector = None  # type: typing.Optional[int]
         self._original_target = None  # type: typing.Optional[int]
 
@@ -136,7 +147,9 @@ class SotaMouthLedController(object):
         with self._state_lock:
             if self._active:
                 return
-            self._led_lock.acquire(self._lock_key, self._led_ids)
+            self._lock_lease = self._led_lock.acquire(
+                self._lock_key, self._led_ids
+            )
             selector = None
             target = None
             selector_write_attempted = False
@@ -161,7 +174,7 @@ class SotaMouthLedController(object):
                     MOUTH_LED_SELECTOR_ADDRESS,
                     MOUTH_LED_NORMAL_SOURCE_ADDRESS,
                 )
-            except BaseException:
+            except BaseException as operation_error:
                 if selector_write_attempted and selector is not None:
                     self._attempt_call(
                         self._memory.write_u16,
@@ -175,11 +188,12 @@ class SotaMouthLedController(object):
                         SOTA_MOUTH_GLOBAL_LED_ID,
                         target,
                     )
-                self._attempt_call(
-                    self._led_lock.release,
-                    self._lock_key,
-                    self._led_ids,
-                )
+                try:
+                    self._release_current_lock()
+                except BaseException as cleanup_error:
+                    raise VsmdMouthLedCleanupError(
+                        operation_error, cleanup_error
+                    ) from cleanup_error
                 raise
             self._original_selector = selector
             self._original_target = target
@@ -201,8 +215,13 @@ class SotaMouthLedController(object):
                 self._timer.set_duration(
                     SOTA_MOUTH_GLOBAL_LED_ID, duration_ms
                 )
-            except BaseException:
-                self._attempt_call(self.enable_voice_sync)
+            except BaseException as operation_error:
+                try:
+                    self.enable_voice_sync()
+                except BaseException as cleanup_error:
+                    raise VsmdMouthLedCleanupError(
+                        operation_error, cleanup_error
+                    ) from cleanup_error
                 raise
 
     def turn_off(self, duration_ms):
@@ -248,16 +267,22 @@ class SotaMouthLedController(object):
                 if first_error is None:
                     first_error = error
 
+            release_error = None  # type: typing.Optional[BaseException]
             try:
-                self._led_lock.release(self._lock_key, self._led_ids)
+                self._release_current_lock()
             except BaseException as error:
-                if first_error is None:
-                    first_error = error
+                release_error = error
             finally:
                 self._active = False
                 self._original_selector = None
                 self._original_target = None
 
+            if release_error is not None:
+                if first_error is not None:
+                    raise VsmdMouthLedCleanupError(
+                        first_error, release_error
+                    ) from release_error
+                raise release_error
             if first_error is not None:
                 raise first_error
 
@@ -282,6 +307,20 @@ class SotaMouthLedController(object):
             raise VsmdMouthLedStateError(
                 "voice sync must be disabled before changing brightness"
             )
+
+    def _release_current_lock(self):
+        # type: () -> None
+        lease = self._lock_lease
+        self._lock_lease = None
+        if lease is not None:
+            release = getattr(lease, "release", None)
+            if not callable(release):
+                raise VsmdMouthLedStateError(
+                    "lock acquire returned an invalid lease"
+                )
+            release()
+            return
+        self._led_lock.release(self._lock_key, self._led_ids)
 
     @staticmethod
     def _attempt_call(callable_object, *args):
