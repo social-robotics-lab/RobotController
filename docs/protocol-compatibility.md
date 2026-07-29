@@ -715,9 +715,39 @@ Outputが各phaseのTarget、RemainingTimeが0、TriggerPointerがlease timer ad
 deadline内かつ最大3回までである。各snapshotには取得時間とpoll attemptを記録する。
 下降失敗時も既存cleanupでselector復元を優先し、UNLOCKは1回だけ試みる。
 
-このrise/hold/fall修正版はFakeによる検証までであり、実機writeも物理発光試験も
-まだ実行していない。CLIの`physical_illumination=not_verified`を維持し、
-physical illumination gateは未完了のままとする。
+2026-07-29のrise/hold/fall修正版live試験では、operatorが物理的なmouth LED点灯を
+確認し、PythonからのLOCK、selector、Target、control-tick timer write経路が物理LEDへ
+到達することを実証した。ただし最初の逐次readはOutput 13を取得した後に
+RemainingTime 0を取得し、旧判定がrise失敗と誤認した。試験後のread-only observer
+ではOutput 16への到達、selector `0x008a`、Target 0、TriggerPointer `0x01f4`を
+確認した。逐次readの値は原子的snapshotではない。
+
+誤判定により正のtimerを使うfade-downへ進まず、cleanupのtimer 0だけが書かれたため
+Output 16が残った。selectorはAudioDiffへ正常に復元された。次回実行候補では
+`pointer → remaining_before → output → remaining_after → timer`を1 observationとして
+記録し、両RemainingTimeが0、OutputがTarget、pointerがlease timerに一致する場合だけ
+成功とする。不一致は即時確定失敗にせず、有限deadline内で最大3回再確認する。
+
+また、次回開始時にpreflight Outputが非0なら、selectorを`0x008a`に保ったまま
+Target 0と正のtimer ticksでOutput 0へ正規化し、その完了後だけselectorを
+`0x0c9c`へ切り替える。selector切替後の失敗では、可能なら正のtimerによる
+emergency fade-downを試み、その成否にかかわらずselector復元と単一UNLOCKを優先する。
+
+同じ実機では補間完了後のlease timer slotが`0xffff`へ変化した。timer slot値は
+診断用に記録するが補間完了条件には含めない。観測firmwareにおける`0xffff`の
+正確な意味論は未確認である。CLI自身は物理点灯を検出できないため
+`physical_illumination=not_verified`を維持する。
+
+> On the observed firmware, the interpolation timer slot changed to
+> `0xffff` after completion. Its exact firmware semantics remain unverified.
+
+現在のgateは次のとおりである。
+
+```text
+physical_illumination_observed = complete
+bounded_rise_hold_fall_sequence = incomplete
+safe_output_zero_after_probe = incomplete
+```
 
 #### 18.0.6 未確認または今後の課題
 

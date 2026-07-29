@@ -56,6 +56,7 @@ from robot_controller.hardware.vsmd.mouth_led import (
     VsmdLedLock,
 )
 from robot_controller.hardware.vsmd.sota_memory_map import (
+    INTERP_LED_TARGET_BASE,
     MASTER_CONTROL_PERIOD_ADDRESS,
     MOUTH_LED_AUDIO_SOURCE_ADDRESS,
     MOUTH_LED_SELECTOR_ADDRESS,
@@ -95,23 +96,39 @@ class ProbeSnapshot(_ProbeSnapshotBase):
     __slots__ = ()
 
 
-_ActiveInterpolationStateBase = collections.namedtuple(
-    "_ActiveInterpolationStateBase",
+_InterpolationObservationBase = collections.namedtuple(
+    "_InterpolationObservationBase",
     [
-        "output",
-        "remaining_time",
         "trigger_pointer",
+        "remaining_before",
+        "output",
+        "remaining_after",
         "timer_value",
-        "snapshot_read_duration_ms",
+        "observation_read_duration_ms",
         "poll_attempt",
     ],
 )
 
 
-class ActiveInterpolationState(_ActiveInterpolationStateBase):
-    """Immutable, complete interpolation snapshot from four VSMD reads."""
+class InterpolationObservation(_InterpolationObservationBase):
+    """Immutable record of sequential reads; it is not an atomic snapshot."""
 
     __slots__ = ()
+
+    @property
+    def remaining_time(self):
+        # type: () -> int
+        """Compatibility alias for the final RemainingTime read."""
+        return self.remaining_after
+
+    @property
+    def snapshot_read_duration_ms(self):
+        # type: () -> float
+        """Compatibility alias retained for existing diagnostic consumers."""
+        return self.observation_read_duration_ms
+
+
+ActiveInterpolationState = InterpolationObservation
 
 
 _ProbeResultBase = collections.namedtuple(
@@ -122,6 +139,11 @@ _ProbeResultBase = collections.namedtuple(
         "timer_address",
         "master_control_period_us",
         "timer_ticks",
+        "normalization_required",
+        "normalization_timer_ticks",
+        "normalized_state",
+        "normalization_observations",
+        "normalization_completed",
         "active_state",
         "interpolation_reached_target",
         "active_snapshots",
@@ -131,6 +153,8 @@ _ProbeResultBase = collections.namedtuple(
         "off_snapshots",
         "fade_down_completed",
         "interpolation_output_safe_zero",
+        "emergency_fade_down_attempted",
+        "emergency_fade_down_completed",
         "postflight",
         "pulse_completed",
         "cleanup_completed",
@@ -220,14 +244,24 @@ class AppManagerMouthLedLiveProbe(object):
         self.locked_trigger_pointer = None  # type: typing.Optional[int]
         self.master_control_period_us = None  # type: typing.Optional[int]
         self.timer_ticks = None  # type: typing.Optional[int]
-        self.active_state = None  # type: typing.Optional[ActiveInterpolationState]
-        self.active_snapshots = []  # type: typing.List[ActiveInterpolationState]
+        self.normalization_required = False
+        self.normalization_timer_ticks = None  # type: typing.Optional[int]
+        self.normalized_state = None  # type: typing.Optional[InterpolationObservation]
+        self.normalization_observations = []  # type: typing.List[InterpolationObservation]
+        self.normalization_completed = False
+        self.active_state = None  # type: typing.Optional[InterpolationObservation]
+        self.active_snapshots = []  # type: typing.List[InterpolationObservation]
         self.interpolation_reached_target = False
         self.hold_completed = False
-        self.off_state = None  # type: typing.Optional[ActiveInterpolationState]
-        self.off_snapshots = []  # type: typing.List[ActiveInterpolationState]
+        self.off_state = None  # type: typing.Optional[InterpolationObservation]
+        self.off_snapshots = []  # type: typing.List[InterpolationObservation]
         self.fade_down_completed = False
         self.interpolation_output_safe_zero = False
+        self.emergency_state = None  # type: typing.Optional[InterpolationObservation]
+        self.emergency_observations = []  # type: typing.List[InterpolationObservation]
+        self.emergency_fade_down_attempted = False
+        self.emergency_fade_down_completed = False
+        self.primary_operation_error = None  # type: typing.Optional[BaseException]
         self.routing_state_restored = False
         self.lease = None  # type: typing.Optional[AppManagerVsmdLedLockLease]
         self.pulse_completed = False
@@ -281,12 +315,47 @@ class AppManagerMouthLedLiveProbe(object):
         handoff_lock = _SingleLeaseHandoffLock(
             PROBE_LOCAL_LOCK_KEY, self.lease
         )
+        timer = None  # type: typing.Optional[AppManagerLeaseInterpolationTimer]
         try:
             timer = AppManagerLeaseInterpolationTimer(
                 self._memory,
                 self._led_lock,
                 master_control_period_us=self.master_control_period_us,
             )
+            self.normalization_required = self.preflight.output != 0
+            self.normalization_timer_ticks = self.timer_ticks
+            if self.normalization_required:
+                self._memory.write_s16_at(
+                    INTERP_LED_TARGET_BASE,
+                    SOTA_MOUTH_GLOBAL_LED_ID,
+                    0,
+                )
+                timer.set_duration(
+                    SOTA_MOUTH_GLOBAL_LED_ID, self._duration_ms
+                )
+                self._sleep_function(self._duration_ms / 1000.0)
+                (
+                    self.normalized_state,
+                    self.normalization_observations,
+                ) = self._wait_for_interpolation(
+                    timer_address,
+                    0,
+                    "normalization",
+                )
+            selector_before_switch = self._memory.read_u16(
+                MOUTH_LED_SELECTOR_ADDRESS
+            )
+            if selector_before_switch != self.preflight.selector:
+                raise VsmdMouthLedStateError(
+                    "mouth selector changed during hidden normalization"
+                )
+            self.normalization_completed = True
+        except BaseException as preparation_error:
+            self._cleanup_normalization_failure(
+                timer, preparation_error
+            )
+
+        try:
             controller = self._controller_factory(
                 self._memory,
                 timer,
@@ -330,6 +399,29 @@ class AppManagerMouthLedLiveProbe(object):
             self.pulse_completed = True
         except BaseException as error:
             operation_error = error
+            self.primary_operation_error = error
+
+        emergency_error = None  # type: typing.Optional[BaseException]
+        if (
+            operation_error is not None
+            and controller.is_voice_sync_disabled
+        ):
+            self.emergency_fade_down_attempted = True
+            try:
+                controller.turn_off(self._duration_ms)
+                self._sleep_function(self._duration_ms / 1000.0)
+                (
+                    self.emergency_state,
+                    self.emergency_observations,
+                ) = self._wait_for_interpolation(
+                    timer_address,
+                    0,
+                    "emergency-fade-down",
+                )
+                self.emergency_fade_down_completed = True
+                self.interpolation_output_safe_zero = True
+            except BaseException as error:
+                emergency_error = error
 
         cleanup_error = None  # type: typing.Optional[BaseException]
         try:
@@ -346,14 +438,21 @@ class AppManagerMouthLedLiveProbe(object):
                 if cleanup_error is None:
                     cleanup_error = error
 
-        if operation_error is not None and cleanup_error is not None:
-            raise VsmdMouthLedCleanupError(
-                operation_error, cleanup_error
-            ) from cleanup_error
-        if cleanup_error is not None:
-            raise cleanup_error
-
-        _validate_release_success(self.lease)
+        recovery_error = _combine_cleanup_errors(
+            emergency_error, cleanup_error
+        )
+        try:
+            _validate_release_success(self.lease)
+        except BaseException as error:
+            if cleanup_error is None:
+                recovery_error = _combine_cleanup_errors(
+                    recovery_error, error
+                )
+            if operation_error is not None:
+                raise VsmdMouthLedCleanupError(
+                    operation_error, recovery_error
+                ) from recovery_error
+            raise recovery_error
 
         # Failed/unknown release exits above. Do not perform extra reads in
         # that state: the server stack may still own the LED and success is
@@ -365,12 +464,15 @@ class AppManagerMouthLedLiveProbe(object):
             self.routing_state_restored = True
         except BaseException as error:
             postflight_error = error
-        if operation_error is not None and postflight_error is not None:
+        recovery_error = _combine_cleanup_errors(
+            recovery_error, postflight_error
+        )
+        if operation_error is not None and recovery_error is not None:
             raise VsmdMouthLedCleanupError(
-                operation_error, postflight_error
-            ) from postflight_error
-        if postflight_error is not None:
-            raise postflight_error
+                operation_error, recovery_error
+            ) from recovery_error
+        if recovery_error is not None:
+            raise recovery_error
         if operation_error is not None:
             raise operation_error
         return ProbeResult(
@@ -379,6 +481,11 @@ class AppManagerMouthLedLiveProbe(object):
             timer_address,
             self.master_control_period_us,
             self.timer_ticks,
+            self.normalization_required,
+            self.normalization_timer_ticks,
+            self.normalized_state,
+            tuple(self.normalization_observations),
+            self.normalization_completed,
             self.active_state,
             self.interpolation_reached_target,
             tuple(self.active_snapshots),
@@ -388,6 +495,8 @@ class AppManagerMouthLedLiveProbe(object):
             tuple(self.off_snapshots),
             self.fade_down_completed,
             self.interpolation_output_safe_zero,
+            self.emergency_fade_down_attempted,
+            self.emergency_fade_down_completed,
             self.postflight,
             self.pulse_completed,
             self.cleanup_completed,
@@ -402,22 +511,29 @@ class AppManagerMouthLedLiveProbe(object):
             self._memory.read_u16(SOTA_MOUTH_TRIGGER_POINTER_ADDRESS),
         )
 
-    def _read_active_state(self, timer_address, poll_attempt):
-        # type: (int, int) -> ActiveInterpolationState
+    def _read_interpolation_observation(
+        self, timer_address, poll_attempt
+    ):
+        # type: (int, int) -> InterpolationObservation
+        """Read ordered fields without claiming they form an atomic snapshot."""
         started_at = self._monotonic_function()
-        output = self._memory.read_s16(SOTA_MOUTH_OUTPUT_ADDRESS)
-        remaining_time = self._memory.read_u16(
-            SOTA_MOUTH_REMAINING_TIME_ADDRESS
-        )
         trigger_pointer = self._memory.read_u16(
             SOTA_MOUTH_TRIGGER_POINTER_ADDRESS
         )
+        remaining_before = self._memory.read_u16(
+            SOTA_MOUTH_REMAINING_TIME_ADDRESS
+        )
+        output = self._memory.read_s16(SOTA_MOUTH_OUTPUT_ADDRESS)
+        remaining_after = self._memory.read_u16(
+            SOTA_MOUTH_REMAINING_TIME_ADDRESS
+        )
         timer_value = self._memory.read_u16(timer_address)
         finished_at = self._monotonic_function()
-        return ActiveInterpolationState(
-            output,
-            remaining_time,
+        return InterpolationObservation(
             trigger_pointer,
+            remaining_before,
+            output,
+            remaining_after,
             timer_value,
             max(0.0, (finished_at - started_at) * 1000.0),
             poll_attempt,
@@ -426,8 +542,8 @@ class AppManagerMouthLedLiveProbe(object):
     def _wait_for_interpolation(
         self, timer_address, expected_output, phase_name
     ):
-        # type: (int, int, str) -> typing.Tuple[ActiveInterpolationState, typing.List[ActiveInterpolationState]]
-        """Read complete snapshots and bound whether another poll may start."""
+        # type: (int, int, str) -> typing.Tuple[InterpolationObservation, typing.List[InterpolationObservation]]
+        """Bound repeated sequential observations without automatic rewrites."""
         period_seconds = self.master_control_period_us / 1000000.0
         grace_seconds = min(
             MAX_ACTIVE_COMPLETION_GRACE_SECONDS,
@@ -442,35 +558,39 @@ class AppManagerMouthLedLiveProbe(object):
         )
         deadline = self._monotonic_function() + grace_seconds
         poll_attempt = 0
-        snapshots = []  # type: typing.List[ActiveInterpolationState]
+        observations = []  # type: typing.List[InterpolationObservation]
         while True:
-            state = self._read_active_state(timer_address, poll_attempt)
-            snapshots.append(state)
+            state = self._read_interpolation_observation(
+                timer_address, poll_attempt
+            )
+            observations.append(state)
             if phase_name == "rise":
                 self.active_state = state
-                self.active_snapshots = list(snapshots)
-            else:
+                self.active_snapshots = list(observations)
+            elif phase_name == "fade-down":
                 self.off_state = state
-                self.off_snapshots = list(snapshots)
+                self.off_snapshots = list(observations)
                 self.interpolation_output_safe_zero = state.output == 0
+            elif phase_name == "normalization":
+                self.normalized_state = state
+                self.normalization_observations = list(observations)
+            else:
+                self.emergency_state = state
+                self.emergency_observations = list(observations)
+                if state.output == 0:
+                    self.interpolation_output_safe_zero = True
             if (
                 state.output == expected_output
-                and state.remaining_time == 0
+                and state.remaining_before == 0
+                and state.remaining_after == 0
                 and state.trigger_pointer == timer_address
             ):
-                return state, snapshots
+                return state, observations
             if state.trigger_pointer != timer_address:
                 raise VsmdMouthLedStateError(
                     "{0} TriggerPointer did not match the lease timer".format(
                         phase_name
                     )
-                )
-            if state.remaining_time == 0:
-                raise VsmdMouthLedStateError(
-                    (
-                        "{0} interpolation ended before reaching "
-                        "output {1}"
-                    ).format(phase_name, expected_output)
                 )
             now = self._monotonic_function()
             if (
@@ -524,6 +644,50 @@ class AppManagerMouthLedLiveProbe(object):
                 operation_error, cleanup_error
             ) from cleanup_error
         raise operation_error
+
+    def _cleanup_normalization_failure(self, timer, operation_error):
+        # type: (typing.Optional[AppManagerLeaseInterpolationTimer], BaseException) -> typing.NoReturn
+        """Clear preparatory writes and release once without changing selector."""
+        cleanup_error = None  # type: typing.Optional[BaseException]
+        if timer is not None and self.normalization_required:
+            try:
+                self._memory.write_s16_at(
+                    INTERP_LED_TARGET_BASE,
+                    SOTA_MOUTH_GLOBAL_LED_ID,
+                    0,
+                )
+            except BaseException as error:
+                cleanup_error = _combine_cleanup_errors(
+                    cleanup_error, error
+                )
+            try:
+                timer.set_duration(SOTA_MOUTH_GLOBAL_LED_ID, 0)
+            except BaseException as error:
+                cleanup_error = _combine_cleanup_errors(
+                    cleanup_error, error
+                )
+        try:
+            self.lease.release()
+            _validate_release_success(self.lease)
+        except BaseException as error:
+            cleanup_error = _combine_cleanup_errors(
+                cleanup_error, error
+            )
+        if cleanup_error is not None:
+            raise VsmdMouthLedCleanupError(
+                operation_error, cleanup_error
+            ) from cleanup_error
+        raise operation_error
+
+
+def _combine_cleanup_errors(first_error, second_error):
+    # type: (typing.Optional[BaseException], typing.Optional[BaseException]) -> typing.Optional[BaseException]
+    """Preserve two recovery failures without introducing another error type."""
+    if first_error is None:
+        return second_error
+    if second_error is None:
+        return first_error
+    return VsmdMouthLedCleanupError(first_error, second_error)
 
 
 def _validate_release_success(lease):
@@ -733,13 +897,25 @@ def _print_lease(lease, output):
 
 
 def _print_interpolation_state(prefix, state, reached_target, output):
-    # type: (str, typing.Optional[ActiveInterpolationState], bool, typing.Any) -> None
+    # type: (str, typing.Optional[InterpolationObservation], bool, typing.Any) -> None
     if state is None:
         return
     print("{0}_output={1}".format(prefix, state.output), file=output)
     print(
+        "{0}_remaining_before={1}".format(
+            prefix, state.remaining_before
+        ),
+        file=output,
+    )
+    print(
+        "{0}_remaining_after={1}".format(
+            prefix, state.remaining_after
+        ),
+        file=output,
+    )
+    print(
         "{0}_remaining_time={1}".format(
-            prefix, state.remaining_time
+            prefix, state.remaining_after
         ),
         file=output,
     )
@@ -754,8 +930,14 @@ def _print_interpolation_state(prefix, state, reached_target, output):
         file=output,
     )
     print(
+        "{0}_observation_read_duration_ms={1:.3f}".format(
+            prefix, state.observation_read_duration_ms
+        ),
+        file=output,
+    )
+    print(
         "{0}_snapshot_read_duration_ms={1:.3f}".format(
-            prefix, state.snapshot_read_duration_ms
+            prefix, state.observation_read_duration_ms
         ),
         file=output,
     )
@@ -774,6 +956,28 @@ def _print_interpolation_state(prefix, state, reached_target, output):
         print(
             "interpolation_reached_target={0}".format(
                 str(reached_target is True).lower()
+            ),
+            file=output,
+        )
+
+
+def _print_observation_history(prefix, observations, output):
+    # type: (str, typing.Sequence[InterpolationObservation], typing.Any) -> None
+    for observation in observations:
+        print(
+            (
+                "{0}_observation_{1}=pointer=0x{2:04x},"
+                "remaining_before={3},output={4},remaining_after={5},"
+                "timer_value={6},read_duration_ms={7:.3f}"
+            ).format(
+                prefix,
+                observation.poll_attempt,
+                observation.trigger_pointer,
+                observation.remaining_before,
+                observation.output,
+                observation.remaining_after,
+                observation.timer_value,
+                observation.observation_read_duration_ms,
             ),
             file=output,
         )
@@ -879,16 +1083,63 @@ def main(
                     ),
                     file=sys.stderr,
                 )
+            print(
+                "normalization_required={0}".format(
+                    str(probe.normalization_required).lower()
+                ),
+                file=sys.stderr,
+            )
+            if probe.normalization_timer_ticks is not None:
+                print(
+                    "normalization_timer_ticks={0}".format(
+                        probe.normalization_timer_ticks
+                    ),
+                    file=sys.stderr,
+                )
+            _print_interpolation_state(
+                "normalized",
+                probe.normalized_state,
+                probe.normalization_completed,
+                sys.stderr,
+            )
+            _print_observation_history(
+                "normalization",
+                probe.normalization_observations,
+                sys.stderr,
+            )
+            print(
+                "normalization_completed={0}".format(
+                    str(probe.normalization_completed).lower()
+                ),
+                file=sys.stderr,
+            )
             _print_interpolation_state(
                 "rise",
                 probe.active_state,
                 probe.interpolation_reached_target,
                 sys.stderr,
             )
+            _print_observation_history(
+                "rise", probe.active_snapshots, sys.stderr
+            )
             _print_interpolation_state(
                 "off",
                 probe.off_state,
                 probe.fade_down_completed,
+                sys.stderr,
+            )
+            _print_observation_history(
+                "fall", probe.off_snapshots, sys.stderr
+            )
+            _print_interpolation_state(
+                "emergency",
+                probe.emergency_state,
+                probe.emergency_fade_down_completed,
+                sys.stderr,
+            )
+            _print_observation_history(
+                "emergency",
+                probe.emergency_observations,
                 sys.stderr,
             )
             print(
@@ -917,6 +1168,30 @@ def main(
                 ),
                 file=sys.stderr,
             )
+            if probe.primary_operation_error is not None:
+                print(
+                    "primary_operation_error={0}: {1}".format(
+                        type(probe.primary_operation_error).__name__,
+                        probe.primary_operation_error,
+                    ),
+                    file=sys.stderr,
+                )
+            print(
+                "emergency_fade_down_attempted={0}".format(
+                    str(
+                        probe.emergency_fade_down_attempted
+                    ).lower()
+                ),
+                file=sys.stderr,
+            )
+            print(
+                "emergency_fade_down_completed={0}".format(
+                    str(
+                        probe.emergency_fade_down_completed
+                    ).lower()
+                ),
+                file=sys.stderr,
+            )
             _print_lease(probe.lease, sys.stderr)
         print("result=failure", file=sys.stderr)
         print(
@@ -934,11 +1209,40 @@ def main(
             result.locked_trigger_pointer
         )
     )
+    print(
+        "normalization_required={0}".format(
+            str(result.normalization_required).lower()
+        )
+    )
+    print(
+        "normalization_timer_ticks={0}".format(
+            result.normalization_timer_ticks
+        )
+    )
+    _print_interpolation_state(
+        "normalized",
+        result.normalized_state,
+        result.normalization_completed,
+        sys.stdout,
+    )
+    _print_observation_history(
+        "normalization",
+        result.normalization_observations,
+        sys.stdout,
+    )
+    print(
+        "normalization_completed={0}".format(
+            str(result.normalization_completed).lower()
+        )
+    )
     _print_interpolation_state(
         "rise",
         result.active_state,
         result.interpolation_reached_target,
         sys.stdout,
+    )
+    _print_observation_history(
+        "rise", result.active_snapshots, sys.stdout
     )
     print("hold_duration_ms={0}".format(result.hold_duration_ms))
     print(
@@ -953,6 +1257,9 @@ def main(
         result.fade_down_completed,
         sys.stdout,
     )
+    _print_observation_history(
+        "fall", result.off_snapshots, sys.stdout
+    )
     print(
         "fade_down_completed={0}".format(
             str(result.fade_down_completed).lower()
@@ -961,6 +1268,16 @@ def main(
     print(
         "interpolation_output_safe_zero={0}".format(
             str(result.interpolation_output_safe_zero).lower()
+        )
+    )
+    print(
+        "emergency_fade_down_attempted={0}".format(
+            str(result.emergency_fade_down_attempted).lower()
+        )
+    )
+    print(
+        "emergency_fade_down_completed={0}".format(
+            str(result.emergency_fade_down_completed).lower()
         )
     )
     print(

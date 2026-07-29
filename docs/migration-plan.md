@@ -249,16 +249,26 @@ lock取得を`VsmdLedLockUnavailableError`で拒否し、memory writeを行わ�
 * [x] 明示確認必須のLED 14単発live probe候補をFakeで検証
 * [x] `MasterCtrlPeriod`によるcontrol ticks変換を実装しFakeで検証
 * [x] TCP 6498 read-only mouth LED observerをFakeで検証
-* [x] rise完了、有限hold、正規timerによるfade-downをFakeで検証
+* [x] 非原子的逐次observation、事前Output正規化、emergency fade-downをFakeで検証
 * [ ] lock競合、non-LIFO、異常終了時の安全な回復手順
 * [ ] `UnavailableVsmdLedLock`からproduction candidateへの切替
-* [ ] rise/hold/fall修正版live probeによるactual LED pulse試験
+* [x] operatorがPython経路による物理mouth LED点灯を確認
+* [ ] bounded rise/hold/fall全体を実機で完了
+* [ ] probe終了時の安全なOutput 0を実機で確認
 * [ ] Composition Root統合とproduction実機LED write
 
-2026-07-29の旧timer実装によるlive試験はlock、write、cleanup、restorationに成功
-したが、Outputは1までで物理LEDは点灯しなかったため、actual LED pulse試験は未完了
-のままである。修正したcontrol ticks変換はFake検証までで、修正版の実機writeは
-実施していない。
+2026-07-29のcontrol-ticks修正版live試験ではoperatorが物理LED点灯を確認した。
+ただし逐次readのOutput 13 / RemainingTime 0を原子的状態と誤認してrise失敗とし、
+正のtimerによるfade-downを行わなかった。試験後Outputは16、selectorはAudioDiffへ
+復元済みだった。timer 0ではOutputを戻せないため、physical illuminationと安全な
+pulse lifecycleは別gateとして管理する。補間完了後timer slot `0xffff`の意味論は
+未確認である。
+
+```text
+physical_illumination_observed = complete
+bounded_rise_hold_fall_sequence = incomplete
+safe_output_zero_after_probe = incomplete
+```
 
 通常`aplay`のread-only observerではAudioDiff変化とTCP 6498 read-only動作を実機
 確認した。full observerのsamplingはbest-effortで非原子的であり、AudioDiff focused

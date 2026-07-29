@@ -325,10 +325,11 @@ CLIの`result=success`はprotocol、memory operation、cleanup、release、postf
 既存controllerの`turn_off(transition_duration_ms)`でTarget 0と正のtimer ticksを
 設定して下降transitionも確認する。timer 0によるcleanupだけではOutputが0へ戻らない
 ことが実機observerで確認されたため、selectorを復元する前に正規の下降補間を行う。
-上昇・下降ともOutput、RemainingTime、TriggerPointer、lease timer値をreadし、
-Outputがphaseの要求値、RemainingTimeが0、TriggerPointerがlease timer addressの
-場合だけ完了とする。timer値は診断用に記録するが成功条件には含めない。
-RemainingTimeが非0なら最大3回だけ再確認する。
+上昇・下降とも`pointer → remaining_before → output → remaining_after → lease timer`
+の順にreadする。これは原子的snapshotではなく逐次observationである。Outputがphaseの
+要求値、前後のRemainingTimeがともに0、TriggerPointerがlease timer addressの場合
+だけ完了とする。timer値は診断用に記録するが成功条件には含めない。不一致は
+`RemainingTime == 0`でも即時失敗とせず、最大3回だけ再確認する。
 追加deadlineは`(timer_ticks + 2) * MasterCtrlPeriod`を基準に50～500 msへ制限し、
 最初の4-read snapshotは途中のdeadline判定で破棄しない。deadlineは次のsnapshotを
 開始するかだけを制御し、各snapshotの取得時間とpoll attemptを記録する。各readは
@@ -339,8 +340,19 @@ selector、Target、TriggerPointerの復元は`routing_state_restored`として�
 Outputはselector復元後に物理mouth LEDへ接続されないため復元条件にはせず、
 preflight値との一致を`interpolation_output_restored`で別に表示する。cleanup前の
 下降確認でOutput 0を取得した場合だけ`interpolation_output_safe_zero=true`とする。
-下降確認に失敗してもselector復元を優先し、physical illuminationは自動成功扱いに
-しない。rise/hold/fall修正版の実機write試験はまだ実行していない。
+preflight Outputが非0なら、LOCK/CONVERT後もselectorをAudioDiffのまま維持し、
+Target 0と正のtimerでOutput 0へ正規化してからselectorを切り替える。正規化失敗時は
+selectorを切り替えない。selector切替後の処理が失敗した場合は、transportが利用可能
+なら正のtimerによるemergency fade-downをbest-effortで1回行い、その後に既存closeと
+単一UNLOCKを行う。primary errorとemergency/cleanup errorは別々に保持する。
+
+2026-07-29の実機試験ではoperatorが物理点灯を確認し、Python LED write経路は
+実証された。一方、非原子的なOutput 13 / RemainingTime 0を旧判定が失敗扱いし、
+fade-downへ進まずtimer 0 cleanup後もOutput 16が残った。selectorはAudioDiffへ
+復元された。補間完了後にtimer slot `0xffff`も観測したが意味論は未確認であり、
+成功条件にはしない。physical illuminationは完了、bounded rise/hold/fallと
+安全なOutput 0終了は未完了の別gateとして扱う。CLIは目視を判定できないため
+`physical_illumination=not_verified`を引き続き表示する。
 
 ```powershell
 python -m robot_controller.hardware.vsmd.app_manager_mouth_led_probe `
