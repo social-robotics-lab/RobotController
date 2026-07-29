@@ -288,6 +288,35 @@ read/writeを記録するだけで、`live_network=false`、`live_write=false`�
 TriggerPointer変更・復元だけで、selector、Target、Outputへのwriteはなかった。
 actual LED pulse testは未実施である。
 
+### 7.3 明示実行専用mouth LED live probe候補
+
+`app_manager_mouth_led_probe`は人間が明示的に実行する診断候補であり、
+`--confirm-live-write`がない場合はTCP 6495/6498のtransportもmemory clientも生成
+しない。Composition Root、server起動経路、既定Backendには接続せず、既定
+`UnavailableVsmdLedLock`も変更しない。
+
+初期版はLED ID 14、level 1..16、duration 50..200 ms、1 pulseだけをコードで
+強制する。preflightでselector `0x008a`、Target 0、Output、TriggerPointerをreadし、
+安全条件を満たす場合だけLOCKとCONVERTを行う。lock後は確認済み
+`InterpLEDTriggerPointer[14]`アドレス`0x0b9c`がleaseのtimer addressと一致するまで
+Target/timer writeを開始しない。pulseとselector/Target/timerのcleanupは既存
+`SotaMouthLedController`へ委譲する。
+
+UNLOCK後はleaseのstate、`is_released`、共有`OK`応答定数がすべて明示的成功である
+場合だけpostflightを行い、selector、Target、TriggerPointerの復元を検証する。
+Outputは表示するが時間差を考慮して一致条件にしない。release失敗または結果不明では
+server側stackが残る可能性があるため、postflight、再LOCK、UNLOCK再送、adapter予約の
+強制解除を行わずfail-closedで終了する。このlive probeの実機試験はまだ実施して
+いない。
+
+```powershell
+python -m robot_controller.hardware.vsmd.app_manager_mouth_led_probe `
+  --app-manager-host 127.0.0.1 --app-manager-port 16495 `
+  --vsmd-host 127.0.0.1 --vsmd-port 16498 `
+  --led-id 14 --level 16 --duration-ms 200 `
+  --confirm-live-write
+```
+
 ## 8. read-only probe
 
 人間が実機で手動実行する場合だけ、次を使用する。2026-07-28にはWindows 11 /

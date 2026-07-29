@@ -21,8 +21,19 @@ INTERP_LOCK_COMMAND = "INTERP_LOCK"
 INTERP_CONVERT_COMMAND = "INTERP_CNV_KEY_2_ADDR"
 INTERP_UNLOCK_COMMAND = "INTERP_UNLOCK"
 
-SERIALIZED_OK = JAVA_STREAM_HEADER + b"\x74\x00\x02OK"
-SERIALIZED_NG = JAVA_STREAM_HEADER + b"\x74\x00\x02NG"
+APP_MANAGER_RESPONSE_OK = "OK"
+APP_MANAGER_RESPONSE_NG = "NG"
+
+SERIALIZED_OK = (
+    JAVA_STREAM_HEADER
+    + b"\x74\x00\x02"
+    + APP_MANAGER_RESPONSE_OK.encode("ascii")
+)
+SERIALIZED_NG = (
+    JAVA_STREAM_HEADER
+    + b"\x74\x00\x02"
+    + APP_MANAGER_RESPONSE_NG.encode("ascii")
+)
 SERIALIZED_NULL = JAVA_STREAM_HEADER + b"\x70"
 
 JAVA_SHORT_SERIALIZATION_PREFIX = bytes.fromhex(
@@ -155,10 +166,10 @@ def decode_response(serialized):
                 "serialized String has trailing bytes"
             )
         value_bytes = body[3:]
-        if value_bytes == b"OK":
-            return "OK"
-        if value_bytes == b"NG":
-            return "NG"
+        if value_bytes == APP_MANAGER_RESPONSE_OK.encode("ascii"):
+            return APP_MANAGER_RESPONSE_OK
+        if value_bytes == APP_MANAGER_RESPONSE_NG.encode("ascii"):
+            return APP_MANAGER_RESPONSE_NG
         raise AppManagerUnexpectedResponseError(
             "unexpected serialized String response"
         )

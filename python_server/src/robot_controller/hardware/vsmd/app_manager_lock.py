@@ -5,6 +5,8 @@ import typing
 import uuid
 
 from robot_controller.hardware.vsmd.app_manager_codec import (
+    APP_MANAGER_RESPONSE_NG,
+    APP_MANAGER_RESPONSE_OK,
     decode_response,
     encode_convert_request,
     encode_lock_request,
@@ -36,6 +38,8 @@ LEASE_ACTIVE = "active"
 LEASE_RELEASED = "released"
 LEASE_RELEASE_FAILED = "release_failed"
 LEASE_RELEASE_OUTCOME_UNKNOWN = "release_outcome_unknown"
+LEASE_RELEASE_RESULT_FAILED = "FAILED"
+LEASE_RELEASE_RESULT_UNKNOWN = "UNKNOWN"
 
 
 def _default_key_factory():
@@ -139,13 +143,13 @@ class AppManagerLedLockLease(object):
                     ),
                 ):
                     self._state = LEASE_RELEASE_OUTCOME_UNKNOWN
-                    self._release_result = "UNKNOWN"
+                    self._release_result = LEASE_RELEASE_RESULT_UNKNOWN
                 else:
                     self._state = LEASE_RELEASE_FAILED
-                    self._release_result = "FAILED"
+                    self._release_result = LEASE_RELEASE_RESULT_FAILED
                 raise
             self._state = LEASE_RELEASED
-            self._release_result = "OK"
+            self._release_result = APP_MANAGER_RESPONSE_OK
 
     def __enter__(self):
         # type: () -> AppManagerLedLockLease
@@ -188,13 +192,13 @@ class AppManagerLedLock(object):
         lock_response = self._exchange(
             encode_lock_request(key, validated_ids)
         )
-        if lock_response == "NG":
+        if lock_response == APP_MANAGER_RESPONSE_NG:
             raise AppManagerLockRejectedError(
                 "AppManager rejected LED lock for key {0!r} IDs {1!r}".format(
                     key, validated_ids
                 )
             )
-        if lock_response != "OK":
+        if lock_response != APP_MANAGER_RESPONSE_OK:
             raise AppManagerUnexpectedResponseError(
                 "LED lock response must be serialized OK or NG"
             )
@@ -221,9 +225,9 @@ class AppManagerLedLock(object):
         response = self._exchange(
             encode_unlock_request(lease.key, lease.led_ids)
         )
-        if response == "OK":
+        if response == APP_MANAGER_RESPONSE_OK:
             return
-        if response == "NG":
+        if response == APP_MANAGER_RESPONSE_NG:
             raise AppManagerUnlockError(
                 "AppManager rejected unlock for key {0!r} IDs {1!r}".format(
                     lease.key, lease.led_ids
@@ -237,7 +241,7 @@ class AppManagerLedLock(object):
         # type: (str, typing.Tuple[int, ...], BaseException) -> None
         try:
             response = self._exchange(encode_unlock_request(key, led_ids))
-            if response != "OK":
+            if response != APP_MANAGER_RESPONSE_OK:
                 raise AppManagerUnlockError(
                     "best-effort unlock did not return OK"
                 )

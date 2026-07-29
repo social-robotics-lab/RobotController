@@ -34,7 +34,9 @@ SOTA_MOUTH_TARGET_ADDRESS = calculate_indexed_address(
 SOTA_MOUTH_TARGET_TIME_ADDRESS = calculate_indexed_address(
     INTERP_TARGET_TIME_BASE, SOTA_MOUTH_GLOBAL_LED_ID, 2
 )
+# Verified directly for LED 14 by the 2026-07-29 AppManager lock capture.
+# The array base/allocation rule remains intentionally unspecified.
+SOTA_MOUTH_TRIGGER_POINTER_ADDRESS = 0x0B9C
 
 if SOTA_MOUTH_OUTPUT_ADDRESS != MOUTH_LED_NORMAL_SOURCE_ADDRESS:
     raise AssertionError("verified Sota mouth output address invariant failed")
-

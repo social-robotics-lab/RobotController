@@ -246,9 +246,11 @@ lock取得を`VsmdLedLockUnavailableError`で拒否し、memory writeを行わ�
 * [x] convert失敗時のbest-effort UNLOCKをFake transportで検証
 * [x] 2026-07-29に実機6495でLED 14 lock-only取得・変換・解放を確認
 * [x] `VsmdLedLock` adapter、lease-aware timer、socketなしdry-runをFakeで検証
+* [x] 明示確認必須のLED 14単発live probe候補をFakeで検証
 * [ ] lock競合、non-LIFO、異常終了時の安全な回復手順
 * [ ] `UnavailableVsmdLedLock`からproduction candidateへの切替
-* [ ] actual LED pulse試験、Composition Root統合、実機LED write
+* [ ] live probeによるactual LED pulse試験
+* [ ] Composition Root統合とproduction実機LED write
 
 ### 試験順序
 
