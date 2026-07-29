@@ -56,6 +56,11 @@ class AppManagerVsmdLedLockLease(object):
         return self._app_manager_lease.release_result
 
     @property
+    def state(self):
+        # type: () -> str
+        return self._app_manager_lease.state
+
+    @property
     def _is_active(self):
         # type: () -> bool
         return self._app_manager_lease.state == LEASE_ACTIVE

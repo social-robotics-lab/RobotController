@@ -1,6 +1,7 @@
 """AppManager lease adaptation to the existing mouth-LED abstractions."""
 
 import inspect
+import json
 import struct
 
 import pytest
@@ -12,13 +13,18 @@ from robot_controller.hardware.vsmd.app_manager_codec import (
     SERIALIZED_NULL,
     SERIALIZED_OK,
 )
-from robot_controller.hardware.vsmd.app_manager_lock import AppManagerLedLock
+from robot_controller.hardware.vsmd.app_manager_lock import (
+    AppManagerLedLock,
+    LEASE_RELEASE_FAILED,
+    LEASE_RELEASE_OUTCOME_UNKNOWN,
+)
 from robot_controller.hardware.vsmd.app_manager_vsmd_lock import (
     AppManagerLeaseInterpolationTimer,
     AppManagerVsmdLedLock,
 )
 from robot_controller.hardware.vsmd.errors import (
     AppManagerLockRejectedError,
+    AppManagerOutcomeUnknownError,
     AppManagerTimerAddressError,
     AppManagerUnlockError,
     VsmdMouthLedCleanupError,
@@ -88,12 +94,14 @@ class FakeVsmdMemory(VsmdMemoryAccess):
         self.data[address:address + len(payload)] = payload
 
 
-def make_components(responses):
+def make_components(responses, key_factory=None):
     events = []
     transport = FakeAppManagerTransport(responses, events)
+    if key_factory is None:
+        key_factory = lambda: "fixture-key"
     app_manager_lock = AppManagerLedLock(
         transport=transport,
-        key_factory=lambda: "fixture-key",
+        key_factory=key_factory,
     )
     adapter = AppManagerVsmdLedLock(app_manager_lock)
     raw_memory = FakeVsmdMemory(events)
@@ -118,6 +126,11 @@ def commands(transport):
         elif b"INTERP_UNLOCK" in request:
             result.append("UNLOCK")
     return result
+
+
+def request_key(request):
+    outer = json.loads(request.decode("ascii"))
+    return json.loads(outer["subjson"])["key"]
 
 
 def test_adapter_satisfies_existing_vsmd_led_lock_contract():
@@ -215,6 +228,98 @@ def test_lease_double_release_does_not_send_second_unlock():
     lease = adapter.acquire("local-key", [14])
     lease.release()
     lease.release()
+    assert commands(transport) == ["LOCK", "CONVERT", "UNLOCK"]
+
+
+def test_successful_release_allows_reacquire():
+    keys = iter(("python-led-first", "python-led-second"))
+    unused_controller, adapter, unused_memory, transport, unused_events = (
+        make_components(
+            [
+                SERIALIZED_OK,
+                serialized_short(502),
+                SERIALIZED_OK,
+                SERIALIZED_OK,
+                serialized_short(504),
+            ],
+            key_factory=lambda: next(keys),
+        )
+    )
+    first_lease = adapter.acquire("first-local-key", [14])
+    first_lease.release()
+    request_count = len(transport.requests)
+
+    second_lease = adapter.acquire("second-local-key", [14])
+
+    assert len(transport.requests) == request_count + 2
+    assert commands(transport) == [
+        "LOCK",
+        "CONVERT",
+        "UNLOCK",
+        "LOCK",
+        "CONVERT",
+    ]
+    assert request_key(transport.requests[0]) == "python-led-first"
+    assert request_key(transport.requests[3]) == "python-led-second"
+    assert second_lease.key != first_lease.key
+
+
+def test_release_ng_blocks_reacquire_without_network():
+    unused_controller, adapter, unused_memory, transport, unused_events = (
+        make_components(
+            [SERIALIZED_OK, serialized_short(502), SERIALIZED_NG]
+        )
+    )
+    lease = adapter.acquire("first-local-key", [14])
+    with pytest.raises(AppManagerUnlockError):
+        lease.release()
+    request_count = len(transport.requests)
+
+    with pytest.raises(VsmdMouthLedStateError):
+        adapter.acquire("second-local-key", [14])
+
+    assert len(transport.requests) == request_count
+    assert commands(transport) == ["LOCK", "CONVERT", "UNLOCK"]
+    assert lease.state == LEASE_RELEASE_FAILED
+    assert lease.release_result == "FAILED"
+    assert not lease.is_released
+
+
+def test_release_outcome_unknown_blocks_reacquire_without_network():
+    unknown = AppManagerOutcomeUnknownError("fake outcome unknown")
+    unused_controller, adapter, unused_memory, transport, unused_events = (
+        make_components([SERIALIZED_OK, serialized_short(502), unknown])
+    )
+    lease = adapter.acquire("first-local-key", [14])
+    with pytest.raises(AppManagerOutcomeUnknownError):
+        lease.release()
+    request_count = len(transport.requests)
+
+    with pytest.raises(VsmdMouthLedStateError):
+        adapter.acquire("second-local-key", [14])
+
+    assert len(transport.requests) == request_count
+    assert commands(transport) == ["LOCK", "CONVERT", "UNLOCK"]
+    assert lease.state == LEASE_RELEASE_OUTCOME_UNKNOWN
+    assert lease.release_result == "UNKNOWN"
+    assert not lease.is_released
+
+
+def test_double_release_after_failure_sends_no_second_unlock():
+    unused_controller, adapter, unused_memory, transport, unused_events = (
+        make_components(
+            [SERIALIZED_OK, serialized_short(502), SERIALIZED_NG]
+        )
+    )
+    lease = adapter.acquire("local-key", [14])
+    with pytest.raises(AppManagerUnlockError):
+        lease.release()
+    request_count = len(transport.requests)
+
+    with pytest.raises(AppManagerUnlockError):
+        lease.release()
+
+    assert len(transport.requests) == request_count
     assert commands(transport) == ["LOCK", "CONVERT", "UNLOCK"]
 
 
