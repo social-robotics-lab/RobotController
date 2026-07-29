@@ -59,7 +59,9 @@ def test_planned_operations_come_from_existing_controller(capsys):
     assert "read_bytes(address=0x0a9c,size=2)" in planned
     assert "write_bytes(address=0x0124,payload=9c0c)" in planned
     assert "write_bytes(address=0x0a9c,payload=1000)" in planned
-    assert "write_bytes(address=0x01f6,payload=c800)" in planned
+    assert "read_bytes(address=0x0040,size=4)" in planned
+    assert "write_bytes(address=0x01f6,payload=0c00)" in planned
+    assert "payload=c800" not in planned
     assert "write_bytes(address=0x01f6,payload=0000)" in planned
     assert "write_bytes(address=0x0124,payload=8a00)" in planned
     assert "address=0x0c9c" not in planned

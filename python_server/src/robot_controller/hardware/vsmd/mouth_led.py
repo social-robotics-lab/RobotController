@@ -16,6 +16,9 @@ from robot_controller.hardware.vsmd.errors import (
     VsmdUnexpectedMouthSelectorError,
     VsmdValidationError,
 )
+from robot_controller.hardware.vsmd.interpolation_timing import (
+    VsmdControlTickConverter,
+)
 from robot_controller.hardware.vsmd.sota_memory_map import (
     INTERP_LED_TARGET_BASE,
     INTERP_TARGET_TIME_BASE,
@@ -84,17 +87,21 @@ class VsmdInterpolationTimer(abc.ABC):
 class VsmdMemoryInterpolationTimer(VsmdInterpolationTimer):
     """Use the verified per-ID target-time memory array."""
 
-    def __init__(self, memory):
-        # type: (VsmdTypedMemory) -> None
+    def __init__(self, memory, master_control_period_us=None):
+        # type: (VsmdTypedMemory, typing.Optional[int]) -> None
         if not isinstance(memory, VsmdTypedMemory):
             raise TypeError("memory must be VsmdTypedMemory")
         self._memory = memory
+        self._tick_converter = VsmdControlTickConverter(
+            memory, master_control_period_us
+        )
 
     def set_duration(self, led_id, duration_ms):
         # type: (int, int) -> None
         _validate_duration(duration_ms)
+        timer_ticks = self._tick_converter.convert(duration_ms)
         self._memory.write_u16_at(
-            INTERP_TARGET_TIME_BASE, led_id, duration_ms
+            INTERP_TARGET_TIME_BASE, led_id, timer_ticks
         )
 
 

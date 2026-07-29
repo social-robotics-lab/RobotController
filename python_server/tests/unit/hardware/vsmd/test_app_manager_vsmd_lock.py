@@ -37,6 +37,7 @@ from robot_controller.hardware.vsmd.mouth_led import (
     VsmdLedLock,
 )
 from robot_controller.hardware.vsmd.sota_memory_map import (
+    MASTER_CONTROL_PERIOD_ADDRESS,
     MOUTH_LED_SELECTOR_ADDRESS,
     SOTA_MOUTH_TARGET_ADDRESS,
 )
@@ -78,11 +79,18 @@ class FakeVsmdMemory(VsmdMemoryAccess):
         self.data[
             SOTA_MOUTH_TARGET_ADDRESS:SOTA_MOUTH_TARGET_ADDRESS + 2
         ] = struct.pack("<h", target)
+        self.data[
+            MASTER_CONTROL_PERIOD_ADDRESS:
+            MASTER_CONTROL_PERIOD_ADDRESS + 4
+        ] = struct.pack("<I", 16666)
         self.writes = []
         self.fail_write_number = None
+        self.fail_read_address = None
 
     def read_bytes(self, address, size):
         self.events.append(("vsmd_read", address, size))
+        if address == self.fail_read_address:
+            raise RuntimeError("fake period read failed")
         return bytes(self.data[address:address + size])
 
     def write_bytes(self, address, payload):
@@ -153,7 +161,8 @@ def test_lock_convert_vsmd_operations_and_unlock_use_lease_timer():
     )
     assert events.index(("app_manager", "CONVERT")) < first_write
     assert events[-1] == ("app_manager", "UNLOCK")
-    assert (502, struct.pack("<H", 200)) in memory.writes
+    assert (502, struct.pack("<H", 12)) in memory.writes
+    assert (502, struct.pack("<H", 200)) not in memory.writes
 
 
 def test_lock_rejection_causes_no_vsmd_write():
@@ -373,6 +382,57 @@ def test_timer_without_active_lease_fails_before_vsmd_write():
     with pytest.raises(VsmdMouthLedStateError):
         timer.set_duration(14, 200)
     assert memory.writes == []
+
+
+def test_lease_timer_reads_period_then_writes_converted_ticks():
+    unused_controller, adapter, memory, transport, events = make_components(
+        [SERIALIZED_OK, serialized_short(502), SERIALIZED_OK]
+    )
+    lease = adapter.acquire("timer-test", [14])
+    timer = AppManagerLeaseInterpolationTimer(
+        VsmdTypedMemory(memory), adapter
+    )
+    timer.set_duration(14, 200)
+    assert ("vsmd_read", MASTER_CONTROL_PERIOD_ADDRESS, 4) in events
+    assert memory.writes[-1] == (502, b"\x0c\x00")
+    lease.release()
+
+
+def test_lease_timer_zero_duration_does_not_read_period():
+    unused_controller, adapter, memory, unused_transport, events = (
+        make_components(
+            [SERIALIZED_OK, serialized_short(502), SERIALIZED_OK]
+        )
+    )
+    lease = adapter.acquire("timer-zero", [14])
+    timer = AppManagerLeaseInterpolationTimer(
+        VsmdTypedMemory(memory), adapter
+    )
+    timer.set_duration(14, 0)
+    assert (
+        "vsmd_read",
+        MASTER_CONTROL_PERIOD_ADDRESS,
+        4,
+    ) not in events
+    assert memory.writes[-1] == (502, b"\x00\x00")
+    lease.release()
+
+
+def test_lease_timer_period_read_failure_writes_nothing():
+    unused_controller, adapter, memory, unused_transport, unused_events = (
+        make_components(
+            [SERIALIZED_OK, serialized_short(502), SERIALIZED_OK]
+        )
+    )
+    lease = adapter.acquire("timer-read-failure", [14])
+    memory.fail_read_address = MASTER_CONTROL_PERIOD_ADDRESS
+    timer = AppManagerLeaseInterpolationTimer(
+        VsmdTypedMemory(memory), adapter
+    )
+    with pytest.raises(RuntimeError, match="period read"):
+        timer.set_duration(14, 200)
+    assert memory.writes == []
+    lease.release()
 
 
 def test_default_and_composition_remain_unavailable_and_mock_only():

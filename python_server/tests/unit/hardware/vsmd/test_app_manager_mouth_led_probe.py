@@ -38,6 +38,7 @@ from robot_controller.hardware.vsmd.errors import (
 from robot_controller.hardware.vsmd.memory import VsmdMemoryAccess
 from robot_controller.hardware.vsmd.mouth_led import UnavailableVsmdLedLock
 from robot_controller.hardware.vsmd.sota_memory_map import (
+    MASTER_CONTROL_PERIOD_ADDRESS,
     MOUTH_LED_SELECTOR_ADDRESS,
     SOTA_MOUTH_OUTPUT_ADDRESS,
     SOTA_MOUTH_TARGET_ADDRESS,
@@ -59,7 +60,7 @@ def command_from_request(request):
 
 
 class FakeVsmdMemory(VsmdMemoryAccess):
-    def __init__(self, selector=138, target=0):
+    def __init__(self, selector=138, target=0, master_period=16666):
         self.data = bytearray(b"\x00" * 65536)
         self.operations = []
         self.read_count = 0
@@ -69,6 +70,7 @@ class FakeVsmdMemory(VsmdMemoryAccess):
         self.set_u16(MOUTH_LED_SELECTOR_ADDRESS, selector)
         self.set_s16(SOTA_MOUTH_TARGET_ADDRESS, target)
         self.set_s16(SOTA_MOUTH_OUTPUT_ADDRESS, 0)
+        self.set_u32(MASTER_CONTROL_PERIOD_ADDRESS, master_period)
         self.set_u16(
             SOTA_MOUTH_TRIGGER_POINTER_ADDRESS, PRE_TRIGGER_POINTER
         )
@@ -93,6 +95,9 @@ class FakeVsmdMemory(VsmdMemoryAccess):
 
     def set_s16(self, address, value):
         self.data[address:address + 2] = struct.pack("<h", value)
+
+    def set_u32(self, address, value):
+        self.data[address:address + 4] = struct.pack("<I", value)
 
 
 class FakeAppManagerTransport(object):
@@ -174,6 +179,7 @@ class FakeVsmdTransport(object):
 def make_probe(
     selector=138,
     target=0,
+    master_period=16666,
     lock_response=SERIALIZED_OK,
     convert_response=None,
     unlock_response=SERIALIZED_OK,
@@ -181,7 +187,11 @@ def make_probe(
     after_unlock=None,
     sleep_function=None,
 ):
-    raw_memory = FakeVsmdMemory(selector=selector, target=target)
+    raw_memory = FakeVsmdMemory(
+        selector=selector,
+        target=target,
+        master_period=master_period,
+    )
     app_transport = FakeAppManagerTransport(
         raw_memory,
         lock_response=lock_response,
@@ -272,6 +282,8 @@ def test_preflight_reads_all_fields_before_lock_and_normal_flow_is_ordered():
         138, 0, 0, PRE_TRIGGER_POINTER
     )
     assert result.locked_trigger_pointer == LEASE_TIMER_ADDRESS
+    assert result.master_control_period_us == 16666
+    assert result.timer_ticks == 12
     assert result.postflight.selector == 138
     assert result.postflight.target == 0
     assert result.postflight.trigger_pointer == PRE_TRIGGER_POINTER
@@ -288,10 +300,13 @@ def test_preflight_reads_all_fields_before_lock_and_normal_flow_is_ordered():
         ("READ", SOTA_MOUTH_TRIGGER_POINTER_ADDRESS, 2),
     ]
     assert memory.operations[4:7] == [
+        ("READ", MASTER_CONTROL_PERIOD_ADDRESS, 4),
         ("APP", INTERP_LOCK_COMMAND),
         ("APP", INTERP_CONVERT_COMMAND),
-        ("READ", SOTA_MOUTH_TRIGGER_POINTER_ADDRESS, 2),
     ]
+    assert memory.operations[7] == (
+        "READ", SOTA_MOUTH_TRIGGER_POINTER_ADDRESS, 2
+    )
     unlock_index = memory.operations.index(
         ("APP", INTERP_UNLOCK_COMMAND)
     )
@@ -309,12 +324,25 @@ def test_real_controller_receives_one_bounded_level_and_timer_duration():
         "WRITE", SOTA_MOUTH_TARGET_ADDRESS, struct.pack("<h", 16)
     )
     timer_on = (
-        "WRITE", result.timer_address, struct.pack("<H", 200)
+        "WRITE", result.timer_address, struct.pack("<H", 12)
     )
     assert writes(memory).count(target_on) == 1
     assert writes(memory).count(timer_on) == 1
     assert commands(transport).count(INTERP_LOCK_COMMAND) == 1
     assert commands(transport).count(INTERP_UNLOCK_COMMAND) == 1
+
+
+def test_timer_conversion_callback_runs_before_lock_or_write():
+    probe, memory, transport, unused_sleeps = make_probe()
+    observations = []
+
+    def observe_preflight(period, ticks):
+        observations.append(
+            (period, ticks, len(transport.requests), tuple(writes(memory)))
+        )
+
+    probe.run(preflight_callback=observe_preflight)
+    assert observations == [(16666, 12, 0, tuple())]
 
 
 def test_probe_instance_cannot_pulse_or_lock_twice():
@@ -342,6 +370,23 @@ def test_preflight_read_failure_does_not_lock_or_write():
     probe, memory, transport, unused_sleeps = make_probe()
     memory.fail_read_number = 3
     with pytest.raises(RuntimeError, match="read"):
+        probe.run()
+    assert transport.requests == []
+    assert writes(memory) == []
+
+
+def test_control_period_read_failure_does_not_lock_or_write():
+    probe, memory, transport, unused_sleeps = make_probe()
+    memory.fail_read_number = 5
+    with pytest.raises(RuntimeError, match="read"):
+        probe.run()
+    assert transport.requests == []
+    assert writes(memory) == []
+
+
+def test_invalid_control_period_does_not_lock_or_write():
+    probe, memory, transport, unused_sleeps = make_probe(master_period=0)
+    with pytest.raises(BaseException):
         probe.run()
     assert transport.requests == []
     assert writes(memory) == []
@@ -400,7 +445,7 @@ def test_locked_trigger_mismatch_writes_nothing_and_unlocks_once():
 
 def test_locked_trigger_read_failure_unlocks_once_without_write():
     probe, memory, transport, unused_sleeps = make_probe()
-    memory.fail_read_number = 5
+    memory.fail_read_number = 6
     with pytest.raises(RuntimeError, match="read"):
         probe.run()
     assert writes(memory) == []
@@ -472,7 +517,7 @@ def test_release_failure_is_fail_closed_without_retry(
     assert commands(transport).count(INTERP_UNLOCK_COMMAND) == 1
     assert len(transport.requests) == 3
     assert probe.postflight is None
-    assert memory.read_count == 7
+    assert memory.read_count == 8
 
 
 class InconsistentLease(object):
@@ -533,7 +578,7 @@ def test_postflight_mismatch_is_failure(mutation):
 
 def test_postflight_read_failure_is_not_success():
     probe, memory, transport, unused_sleeps = make_probe()
-    memory.fail_read_number = 8
+    memory.fail_read_number = 9
     with pytest.raises(RuntimeError, match="read"):
         probe.run()
     assert commands(transport).count(INTERP_UNLOCK_COMMAND) == 1
@@ -589,6 +634,10 @@ def test_confirmed_cli_uses_supplied_endpoints_and_reports_success(capsys):
     assert "lease_state=released" in output
     assert "release_result=OK" in output
     assert "post_output=0" in output
+    assert "master_control_period_us=16666" in output
+    assert "timer_ticks=12" in output
+    assert "control_sequence_completed=true" in output
+    assert "physical_illumination=not_verified" in output
     assert vsmd_calls[0]["host"] == "127.0.0.3"
     assert vsmd_calls[0]["port"] == 16498
     assert app_calls == [

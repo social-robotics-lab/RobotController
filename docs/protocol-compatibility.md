@@ -665,7 +665,33 @@ w 0b9c f4 01
 いない。probeはproduction Composition Rootへ未接続である。PCAPおよびcaptureから
 生成したtextはローカル検証証拠としてリポジトリへ収録していない。
 
-#### 18.0.5 未確認または今後の課題
+#### 18.0.5 LED補間timer単位の静的解析と未成功のlive試験
+
+Vstone `CRobotMotion.play(CRobotPose, int msec, ...)`の静的解析で、公開APIの
+ミリ秒は実行時の`CRobotMem.MasterCtrlPeriod`を使って次のcontrol ticksへ変換
+されることを確認した。`MasterCtrlPeriod`はU32、単位µs、address `0x0040`である。
+
+```text
+timer_ticks = floor(msec * 1000.0 / masterCtrlPeriod)
+timer_ticks = min(timer_ticks, 65535)
+```
+
+旧Python実装は`duration_ms`をtimerへ直接書いていた。2026-07-29にlevel 16、
+duration 200 msで実行したlive probeでは200 ticksを書き、`InterpLEDOutput[14]`
+は1までしか進まず、物理mouth LEDは目視で点灯しなかった。一方、AppManager lock、
+VSMD write、cleanup、release、selector・Target・TriggerPointerの復元は成功した。
+selector `0x0c9c`と音声同期source `0x008a`はJava実装と一致していた。
+
+修正版は実機の`MasterCtrlPeriod`をpreflightで1回readし、同じprobe中の変換に
+再利用する。整数除算によるfloor、65535 clamp、正durationから0 ticksになる場合の
+fail-closedをFakeで検証した。修正版による実機writeとphysical illuminationは未確認
+であり、actual LED pulse試験は完了扱いにしない。
+
+通常の`aplay`中のAudioDiff、selector、Target、Output、TriggerPointer、そのpointer
+先timer、RemainingTimeを観測する`mouth_led_observer`はTCP 6498のreadだけを使用する。
+TCP 6495、LOCK、write、selector変更は行わず、CSVをstdoutへ出力する。
+
+#### 18.0.6 未確認または今後の課題
 
 lock競合時の全応答、他processとの重複を安全に検出する方法、異常終了後の運用上の
 回復手順、Pythonからの安全なproduction LED write、`VsmdSotaCommandTarget`の

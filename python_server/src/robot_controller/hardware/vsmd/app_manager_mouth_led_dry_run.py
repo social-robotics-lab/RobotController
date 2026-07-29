@@ -17,6 +17,7 @@ from robot_controller.hardware.vsmd.app_manager_vsmd_lock import (
 from robot_controller.hardware.vsmd.memory import VsmdMemoryAccess
 from robot_controller.hardware.vsmd.mouth_led import SotaMouthLedController
 from robot_controller.hardware.vsmd.sota_memory_map import (
+    MASTER_CONTROL_PERIOD_ADDRESS,
     MOUTH_LED_SELECTOR_ADDRESS,
     SOTA_MOUTH_GLOBAL_LED_ID,
     SOTA_MOUTH_TARGET_ADDRESS,
@@ -66,6 +67,10 @@ class _DryRunVsmdMemory(VsmdMemoryAccess):
         self._data[
             SOTA_MOUTH_TARGET_ADDRESS:SOTA_MOUTH_TARGET_ADDRESS + 2
         ] = struct.pack("<h", 0)
+        self._data[
+            MASTER_CONTROL_PERIOD_ADDRESS:
+            MASTER_CONTROL_PERIOD_ADDRESS + 4
+        ] = struct.pack("<I", 16666)
         self.operations = []
 
     def read_bytes(self, address, size):

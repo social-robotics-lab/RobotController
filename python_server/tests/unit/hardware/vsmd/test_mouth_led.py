@@ -23,6 +23,7 @@ from robot_controller.hardware.vsmd.sota_memory_map import (
     MOUTH_LED_AUDIO_SOURCE_ADDRESS,
     MOUTH_LED_NORMAL_SOURCE_ADDRESS,
     MOUTH_LED_SELECTOR_ADDRESS,
+    MASTER_CONTROL_PERIOD_ADDRESS,
     SOTA_MOUTH_GLOBAL_LED_ID,
     SOTA_MOUTH_OUTPUT_ADDRESS,
     SOTA_MOUTH_TARGET_ADDRESS,
@@ -40,11 +41,18 @@ class FakeMemory(VsmdMemoryAccess):
         self.data[
             SOTA_MOUTH_TARGET_ADDRESS:SOTA_MOUTH_TARGET_ADDRESS + 2
         ] = struct.pack("<h", target)
+        self.data[
+            MASTER_CONTROL_PERIOD_ADDRESS:
+            MASTER_CONTROL_PERIOD_ADDRESS + 4
+        ] = struct.pack("<I", 16666)
         self.writes = []
         self.write_failures = {}
+        self.read_failure_address = None
 
     def read_bytes(self, address, size):
         self.events.append(("read", address, size))
+        if address == self.read_failure_address:
+            raise RuntimeError("fake period read failed")
         return bytes(self.data[address:address + size])
 
     def write_bytes(self, address, payload):
@@ -192,8 +200,47 @@ def test_memory_timer_uses_verified_led_index_and_little_endian_u16():
     timer = VsmdMemoryInterpolationTimer(VsmdTypedMemory(memory))
     timer.set_duration(14, 1000)
     assert memory.writes == [
-        (INTERP_TARGET_TIME_BASE + 14 * 2, b"\xe8\x03")
+        (INTERP_TARGET_TIME_BASE + 14 * 2, b"\x3c\x00")
     ]
+    assert events[0] == ("read", MASTER_CONTROL_PERIOD_ADDRESS, 4)
+
+
+def test_memory_timer_zero_duration_does_not_read_control_period():
+    events = []
+    memory = FakeMemory(events)
+    timer = VsmdMemoryInterpolationTimer(VsmdTypedMemory(memory))
+    timer.set_duration(14, 0)
+    assert events == [
+        (
+            "write",
+            INTERP_TARGET_TIME_BASE + 14 * 2,
+            b"\x00\x00",
+        )
+    ]
+
+
+@pytest.mark.parametrize("period", [0, -1])
+def test_memory_timer_invalid_period_writes_nothing(period):
+    events = []
+    memory = FakeMemory(events)
+    memory.data[
+        MASTER_CONTROL_PERIOD_ADDRESS:
+        MASTER_CONTROL_PERIOD_ADDRESS + 4
+    ] = struct.pack("<i", period)
+    timer = VsmdMemoryInterpolationTimer(VsmdTypedMemory(memory))
+    with pytest.raises(VsmdValidationError):
+        timer.set_duration(14, 200)
+    assert memory.writes == []
+
+
+def test_memory_timer_period_read_failure_writes_nothing():
+    events = []
+    memory = FakeMemory(events)
+    memory.read_failure_address = MASTER_CONTROL_PERIOD_ADDRESS
+    timer = VsmdMemoryInterpolationTimer(VsmdTypedMemory(memory))
+    with pytest.raises(RuntimeError, match="period read"):
+        timer.set_duration(14, 200)
+    assert memory.writes == []
 
 
 def test_context_restores_after_body_exception():

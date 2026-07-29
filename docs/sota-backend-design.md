@@ -286,7 +286,7 @@ read/writeを記録するだけで、`live_network=false`、`live_write=false`�
 2026-07-29のlock-only実機試験ではtimer address `0x01f6`を取得し、TriggerPointerが
 `0x01f4 → 0x01f6 → 0x01f4`と復元された。観測writeはtimer初期化と
 TriggerPointer変更・復元だけで、selector、Target、Outputへのwriteはなかった。
-actual LED pulse testは未実施である。
+この時点ではactual LED pulse testは未実施だった。
 
 ### 7.3 明示実行専用mouth LED live probe候補
 
@@ -306,8 +306,19 @@ UNLOCK後はleaseのstate、`is_released`、共有`OK`応答定数がすべて�
 場合だけpostflightを行い、selector、Target、TriggerPointerの復元を検証する。
 Outputは表示するが時間差を考慮して一致条件にしない。release失敗または結果不明では
 server側stackが残る可能性があるため、postflight、再LOCK、UNLOCK再送、adapter予約の
-強制解除を行わずfail-closedで終了する。このlive probeの実機試験はまだ実施して
-いない。
+強制解除を行わずfail-closedで終了する。
+
+2026-07-29のlive試験ではlock、VSMD write、cleanup、release、状態復元は成功したが、
+物理mouth LEDは点灯しなかった。旧実装が200 msを200 control ticksとして直接
+書いたためOutputが1までしか進まなかった。Vstone Javaと同じく、実機からpreflightで
+`MasterCtrlPeriod` (`0x0040`, U32 µs)を1回readし、durationをfloor変換したticksへ
+変換するよう修正した。同じperiodをprobe終了まで使うことで、1回の診断内でtimer換算
+基準が変わらない設計とした。修正版はFake検証までで、physical illumination gateは
+未完了である。
+
+CLIの`result=success`はprotocol、memory operation、cleanup、release、postflightの
+成功だけを表す。物理発光の自動確認ではないため、
+`control_sequence_completed=true`と`physical_illumination=not_verified`も表示する。
 
 ```powershell
 python -m robot_controller.hardware.vsmd.app_manager_mouth_led_probe `
@@ -316,6 +327,25 @@ python -m robot_controller.hardware.vsmd.app_manager_mouth_led_probe `
   --led-id 14 --level 16 --duration-ms 200 `
   --confirm-live-write
 ```
+
+### 7.4 通常aplay用read-only observer
+
+`mouth_led_observer`は明示実行専用で、TCP 6498から
+MasterCtrlPeriod、AudioDiff、selector、Target、Output、TriggerPointer、
+確認済みtimer領域内のpointer先、RemainingTimeを有限回readしてCSVへ出力する。
+TCP 6495、LOCK、write、自動retry、Composition Root登録は使用しない。不正な
+TriggerPointerは追跡readせず、`trigger_timer_value`を空欄にする。
+
+```powershell
+python -m robot_controller.hardware.vsmd.mouth_led_observer `
+  --vsmd-host 127.0.0.1 `
+  --vsmd-port 16498 `
+  --interval-ms 20 `
+  --samples 250
+```
+
+要求intervalと`time.monotonic()`で測定した実intervalを両方記録する。通常の
+`aplay`観測は今後、人間が手動で実行する。
 
 ## 8. read-only probe
 

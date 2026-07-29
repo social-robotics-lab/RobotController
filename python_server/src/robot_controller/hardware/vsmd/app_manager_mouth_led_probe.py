@@ -1,7 +1,9 @@
-"""Explicit, bounded live diagnostic for one Sota mouth-LED pulse.
+"""Explicit, bounded live diagnostic for one Sota mouth-LED control sequence.
 
 Importing this module performs no I/O. Both live endpoints are constructed
 only after the command line includes ``--confirm-live-write``.
+Success covers protocol, memory operations, cleanup, release, and postflight;
+the CLI cannot verify physical illumination.
 """
 
 import argparse
@@ -45,12 +47,16 @@ from robot_controller.hardware.vsmd.errors import (
     VsmdMouthLedStateError,
     VsmdValidationError,
 )
+from robot_controller.hardware.vsmd.interpolation_timing import (
+    milliseconds_to_control_ticks,
+)
 from robot_controller.hardware.vsmd.memory import VsmdMemoryClient
 from robot_controller.hardware.vsmd.mouth_led import (
     SotaMouthLedController,
     VsmdLedLock,
 )
 from robot_controller.hardware.vsmd.sota_memory_map import (
+    MASTER_CONTROL_PERIOD_ADDRESS,
     MOUTH_LED_AUDIO_SOURCE_ADDRESS,
     MOUTH_LED_SELECTOR_ADDRESS,
     SOTA_MOUTH_GLOBAL_LED_ID,
@@ -87,6 +93,8 @@ _ProbeResultBase = collections.namedtuple(
         "preflight",
         "locked_trigger_pointer",
         "timer_address",
+        "master_control_period_us",
+        "timer_ticks",
         "postflight",
         "pulse_completed",
         "cleanup_completed",
@@ -167,13 +175,19 @@ class AppManagerMouthLedLiveProbe(object):
         self.preflight = None  # type: typing.Optional[ProbeSnapshot]
         self.postflight = None  # type: typing.Optional[ProbeSnapshot]
         self.locked_trigger_pointer = None  # type: typing.Optional[int]
+        self.master_control_period_us = None  # type: typing.Optional[int]
+        self.timer_ticks = None  # type: typing.Optional[int]
         self.lease = None  # type: typing.Optional[AppManagerVsmdLedLockLease]
         self.pulse_completed = False
         self.cleanup_completed = False
 
-    def run(self):
-        # type: () -> ProbeResult
+    def run(self, preflight_callback=None):
+        # type: (typing.Optional[typing.Callable[[int, int], None]]) -> ProbeResult
         """Execute one pulse without retrying any lock or release operation."""
+        if preflight_callback is not None and not callable(
+            preflight_callback
+        ):
+            raise TypeError("preflight_callback must be callable")
         if self._has_run:
             raise VsmdMouthLedStateError(
                 "live probe instances may run only once"
@@ -181,6 +195,16 @@ class AppManagerMouthLedLiveProbe(object):
         self._has_run = True
         self.preflight = self._read_snapshot()
         self._validate_preflight(self.preflight)
+        self.master_control_period_us = self._memory.read_u32(
+            MASTER_CONTROL_PERIOD_ADDRESS
+        )
+        self.timer_ticks = milliseconds_to_control_ticks(
+            self._duration_ms, self.master_control_period_us
+        )
+        if preflight_callback is not None:
+            preflight_callback(
+                self.master_control_period_us, self.timer_ticks
+            )
 
         self.lease = self._led_lock.acquire(
             PROBE_LOCAL_LOCK_KEY, (SOTA_MOUTH_GLOBAL_LED_ID,)
@@ -207,7 +231,9 @@ class AppManagerMouthLedLiveProbe(object):
         )
         try:
             timer = AppManagerLeaseInterpolationTimer(
-                self._memory, self._led_lock
+                self._memory,
+                self._led_lock,
+                master_control_period_us=self.master_control_period_us,
             )
             controller = self._controller_factory(
                 self._memory,
@@ -261,6 +287,8 @@ class AppManagerMouthLedLiveProbe(object):
             self.preflight,
             self.locked_trigger_pointer,
             timer_address,
+            self.master_control_period_us,
+            self.timer_ticks,
             self.postflight,
             self.pulse_completed,
             self.cleanup_completed,
@@ -398,8 +426,9 @@ def create_argument_parser():
     """Build the explicit opt-in live-write CLI."""
     parser = argparse.ArgumentParser(
         description=(
-            "Run one bounded Sota mouth-LED pulse. No endpoint is opened "
-            "unless --confirm-live-write is present."
+            "Run one bounded Sota mouth-LED control sequence. No endpoint "
+            "is opened unless --confirm-live-write is present. Success does "
+            "not verify physical illumination."
         )
     )
     port = _bounded_integer("port", 1, 65535)
@@ -498,6 +527,17 @@ def _print_lease(lease, output):
     )
 
 
+def _print_timer_preflight(master_control_period_us, timer_ticks):
+    # type: (int, int) -> None
+    """Print the verified conversion before any lock or VSMD write."""
+    print(
+        "master_control_period_us={0}".format(
+            master_control_period_us
+        )
+    )
+    print("timer_ticks={0}".format(timer_ticks))
+
+
 def main(
     argv=None,
     vsmd_transport_factory=VsmdTcpTransport,
@@ -558,10 +598,24 @@ def main(
                 arguments.duration_ms,
                 sleep_function=sleep_function,
             )
-            result = probe.run()
+            result = probe.run(
+                preflight_callback=_print_timer_preflight
+            )
     except BaseException as error:
         if probe is not None:
             _print_snapshot("pre", probe.preflight, sys.stderr)
+            if probe.master_control_period_us is not None:
+                print(
+                    "master_control_period_us={0}".format(
+                        probe.master_control_period_us
+                    ),
+                    file=sys.stderr,
+                )
+            if probe.timer_ticks is not None:
+                print(
+                    "timer_ticks={0}".format(probe.timer_ticks),
+                    file=sys.stderr,
+                )
             if probe.locked_trigger_pointer is not None:
                 print(
                     "locked_trigger_pointer=0x{0:04x}".format(
@@ -591,6 +645,8 @@ def main(
             str(result.pulse_completed).lower()
         )
     )
+    print("control_sequence_completed=true")
+    print("physical_illumination=not_verified")
     print(
         "cleanup_completed={0}".format(
             str(result.cleanup_completed).lower()

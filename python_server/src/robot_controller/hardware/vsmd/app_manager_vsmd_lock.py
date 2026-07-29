@@ -10,6 +10,9 @@ from robot_controller.hardware.vsmd.app_manager_lock import (
     LEASE_ACTIVE,
 )
 from robot_controller.hardware.vsmd.errors import VsmdMouthLedStateError
+from robot_controller.hardware.vsmd.interpolation_timing import (
+    VsmdControlTickConverter,
+)
 from robot_controller.hardware.vsmd.mouth_led import (
     VsmdInterpolationTimer,
     VsmdLedLock,
@@ -184,17 +187,23 @@ class AppManagerVsmdLedLock(VsmdLedLock):
 class AppManagerLeaseInterpolationTimer(VsmdInterpolationTimer):
     """Write duration to the timer address owned by the active lock lease."""
 
-    def __init__(self, memory, led_lock):
-        # type: (VsmdTypedMemory, AppManagerVsmdLedLock) -> None
+    def __init__(
+        self, memory, led_lock, master_control_period_us=None
+    ):
+        # type: (VsmdTypedMemory, AppManagerVsmdLedLock, typing.Optional[int]) -> None
         if not isinstance(memory, VsmdTypedMemory):
             raise TypeError("memory must be VsmdTypedMemory")
         if not isinstance(led_lock, AppManagerVsmdLedLock):
             raise TypeError("led_lock must be AppManagerVsmdLedLock")
         self._memory = memory
         self._led_lock = led_lock
+        self._tick_converter = VsmdControlTickConverter(
+            memory, master_control_period_us
+        )
 
     def set_duration(self, led_id, duration_ms):
         # type: (int, int) -> None
         _validate_duration(duration_ms)
         timer_address = self._led_lock.timer_address_for(led_id)
-        self._memory.write_u16(timer_address, duration_ms)
+        timer_ticks = self._tick_converter.convert(duration_ms)
+        self._memory.write_u16(timer_address, timer_ticks)
