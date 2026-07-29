@@ -529,3 +529,16 @@ M11: Operational release
 * ログと設定が整備されている
 * 学生向け手順がある
 * Java版へのロールバックが可能である
+
+## 2026-07-29 mouth LED pulse抽出状況
+
+* [x] 実機検証済みシーケンスを診断CLIから再利用operationへ抽出
+* [x] `MouthLedBackend`共通契約、Mock、Unavailableを追加
+* [x] opt-in用途の`SotaVsmdBackend`を追加し同一インスタンス内を直列化
+* [x] FakeによるLOCK/UNLOCK、normalization、rise/hold/fall、cleanup回帰を移行
+* [ ] Composition Rootへの接続
+* [ ] Edison CPython 3.6.15でのopt-in統合確認
+
+Composition Rootへの接続はこの変更の対象外とし、既定BackendはUnavailableの
+まま維持する。次のgateは人間が内容を確認した上で行うEdison Python 3.6実行と、
+別途設計する明示的opt-in統合である。

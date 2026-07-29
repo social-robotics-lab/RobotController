@@ -812,3 +812,19 @@ lock競合時の全応答、他processとの重複を安全に検出する方法
 | IDの検証状態 | TODO |
 | パケットの検証状態 | TODO |
 | 可動範囲の検証状態 | TODO |
+
+## mouth LED pulseの再利用Backend境界
+
+2026-07-29の実機検証済みpulse処理は
+`SotaMouthLedPulseOperation`へ抽出し、診断CLIと`SotaVsmdBackend`から同じ実装を
+利用する。CLI互換の`--duration-ms`は`rise_ms`と`fall_ms`の両方へ渡すため、
+既存のwire動作と安全範囲は変わらない。
+
+Backendの公開引数はlevel、rise_ms、hold_ms、fall_msだけである。確認済みの
+LED ID 14、VSMD address、AppManager lock key、変換後timer addressは内部へ
+閉じ込める。成功判定は、期待timer pointer、前後のRemainingTime 0、期待Output
+の逐次readを最大3回再確認する既存規則を維持し、timer slot値`0xffff`は成功条件に
+含めない。結果中のtimer値は診断情報であり、物理発光の証明ではない。
+
+この抽出はRobotController legacy protocol v1のwire形式、応答有無、コマンド効果を
+変更しない。Composition Rootは未接続で、既定BackendはUnavailableのままである。

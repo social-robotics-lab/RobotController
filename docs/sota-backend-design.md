@@ -472,3 +472,27 @@ packet golden vector、device、baud、register、checksum、可動域が未確�
   各低レベル値の検証状態を`protocol-compatibility.md`へ記録する。
 
 このexperimental経路を標準BackendまたはComposition Rootの既定値へ昇格させない。
+
+## 12. 診断CLIから再利用Backendへのmouth LED pulse抽出
+
+2026-07-29に実機検証したmouth LED pulse制御シーケンスは、
+`hardware/vsmd/app_manager_mouth_led_pulse.py`の
+`SotaMouthLedPulseOperation`へ抽出した。診断CLI
+`app_manager_mouth_led_probe.py`は引数解析、`--confirm-live-write`確認、
+依存生成、結果表示、exit code変換だけを担当する。
+
+再利用境界は`hardware/mouth_led_backend.py`の`MouthLedBackend`であり、
+`pulse_mouth_led(level, rise_ms, hold_ms, fall_ms)`を公開する。安全範囲は
+実機検証済みのlevel 1..16、rise/fall 50..200 ms、hold 100..1000 msに
+限定し、`bool`は整数として受理しない。VSMD address、timer address、
+AppManager lock keyは呼出し引数へ公開しない。
+
+`hardware/sota/backend.py`の`SotaVsmdBackend`は同一インスタンス内のpulseを
+`threading.Lock`で直列化し、LOCK/CONVERT、normalization、rise、hold、
+fade-down、selector復元、単一UNLOCKまでを既存のfail-closed手順で実行する。
+lock、VSMD write、UNLOCKの自動retryは行わず、bounded observationだけを使う。
+結果はtimer値、非原子的なread観測、cleanup、routing復元、lock解放を含む
+構造化オブジェクトであり、物理的な発光を自動的に成功扱いしない。
+
+Composition Rootには接続していない。既定production Backendは引き続き
+Unavailableであり、診断CLIの明示フラグなしにlive write経路は開かれない。
