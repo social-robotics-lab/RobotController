@@ -614,7 +614,58 @@ SotaAppManagerのlockは排他的mutexではなく、対象LEDのTriggerPointer 
 可能性があり、process異常終了時の自動解放もない。生成keyは識別子であり、機密情報を
 含めない。
 
-#### 18.0.4 未確認または今後の課題
+明示的な診断用`app_manager_probe`はPython自身から設定されたTCP 6495 endpoint
+だけへ接続し、1回のLOCK、最大1秒の保持、1回のUNLOCKだけを実行する。
+VSMD TransportやMemory Clientを生成せず、Pythonから6498番へ接続またはwrite
+しない。ただし、SotaAppManager自身のLOCK/UNLOCK処理は内部で6498番へtimer初期化と
+TriggerPointer変更を書き込む。これはLED Target/Output値の変更ではないが、補間経路の
+一時変更であるため、実行時は6495番と6498番の両方をcaptureして照合する。
+このprobeは明示的に起動する診断機能であり、Composition Root、既定Backend、
+production起動経路には含めない。
+
+WindowsからSSH local port `16495`をEdisonの6495番へ転送した場合の実行例は
+次のとおり。
+
+```powershell
+python -m robot_controller.hardware.vsmd.app_manager_probe `
+  --host 127.0.0.1 `
+  --port 16495 `
+  --led-id 14 `
+  --hold-seconds 0.2
+```
+
+既存`AppManagerTcpTransport`は1つのtimeoutを全段階へ使用するため、probeの
+`--connect-timeout`、`--read-timeout`、`--write-timeout`は異なる値を指定すると
+fail-closedで拒否する。値を黙って丸めたり自動retryしたりしない。
+
+#### 18.0.4 2026-07-29 AppManager LED lock-only probe
+
+Windows上のPythonからSSH local forwardingを経由してSotaAppManager TCP 6495へ
+接続し、LED ID 14を0.2秒保持するlock-only probeを1回実行した。Python自身が送った
+requestは同一keyによる`INTERP_LOCK`、`INTERP_CNV_KEY_2_ADDR`、
+`INTERP_UNLOCK`の3件である。取得したtimer addressは502 (`0x01f6`)で、
+probeは`lock_acquired=true`、`lock_released=true`、`result=success`を返した。
+
+同時captureで、SotaAppManagerが6498番を通じて送ったwriteは次の3件だけだった。
+
+```text
+w 01f6 00 00
+w 0b9c f6 01
+w 0b9c f4 01
+```
+
+順に、timer `0x01f6`への0、LED 14 TriggerPointerへの`0x01f6`、以前の
+`0x01f4`が書き込まれた。TriggerPointerは
+`0x01f4 → 0x01f6 → 0x01f4`と遷移した。mouth LED selector
+`0x0124`、`InterpLEDTarget[14]` `0x0a9c`、`InterpLEDOutput[14]` `0x0c9c`
+へのwriteはcapture内になかった。Python probe自身は6498番へ接続しておらず、
+上記writeはlock requestを処理したSotaAppManagerの内部処理である。
+
+この結果はlock-only経路の確認であり、actual mouth LED output testは実施して
+いない。probeはproduction Composition Rootへ未接続である。PCAPおよびcaptureから
+生成したtextはローカル検証証拠としてリポジトリへ収録していない。
+
+#### 18.0.5 未確認または今後の課題
 
 lock競合時の全応答、他processとの重複を安全に検出する方法、異常終了後の運用上の
 回復手順、Pythonからの安全なproduction LED write、`VsmdSotaCommandTarget`の
