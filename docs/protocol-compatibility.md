@@ -684,8 +684,9 @@ selector `0x0c9c`と音声同期source `0x008a`はJava実装と一致してい�
 
 修正版は実機の`MasterCtrlPeriod`をpreflightで1回readし、同じprobe中の変換に
 再利用する。整数除算によるfloor、65535 clamp、正durationから0 ticksになる場合の
-fail-closedをFakeで検証した。修正版による実機writeとphysical illuminationは未確認
-であり、actual LED pulse試験は完了扱いにしない。
+fail-closedをFakeで検証した。このtimer換算修正直後の時点では、修正版による
+実機writeとphysical illuminationは未確認であり、actual LED pulse試験を
+完了扱いにしなかった。後述の同日試験で段階的に確認した。
 
 通常の`aplay`中のAudioDiff、selector、Target、Output、TriggerPointer、そのpointer
 先timer、RemainingTimeを観測する`mouth_led_observer`はTCP 6498のreadだけを使用する。
@@ -741,15 +742,44 @@ emergency fade-downを試み、その成否にかかわらずselector復元と�
 > On the observed firmware, the interpolation timer slot changed to
 > `0xffff` after completion. Its exact firmware semantics remain unverified.
 
+上記失敗を修正した後の同日再試験では、事前Output 16をselector切替前に正の
+11 ticksで0へ正規化し、rise、500 ms hold、正の11 ticksによるfade-down、
+cleanup、単一UNLOCK、postflightの全段階が成功した。CLIは終了code 0を返し、
+operatorは物理的なmouth LED点灯を確認した。試験後のread-only observer 3 samplesも
+selector `0x008a`、Target 0、Output 0、TriggerPointer `0x01f4`、
+RemainingTime 0で一致した。
+
+実測値、逐次observation時間および外部証拠ファイル一覧は
+[`evidence/mouth-led-live-test-2026-07-29.md`](evidence/mouth-led-live-test-2026-07-29.md)
+へ集約する。CLI自身には物理発光を検出できないため、
+`physical_illumination=not_verified`は維持し、文書上のoperator確認と区別する。
+
 現在のgateは次のとおりである。
 
 ```text
 physical_illumination_observed = complete
-bounded_rise_hold_fall_sequence = incomplete
-safe_output_zero_after_probe = incomplete
+bounded_rise_hold_fall_sequence = complete
+safe_output_zero_after_probe = complete
 ```
 
-#### 18.0.6 未確認または今後の課題
+#### 18.0.6 2026-07-29 normalized pulse成功試験
+
+実機条件はMasterCtrlPeriod `16667 us`、LED ID 14、level 16、transition
+200 ms、hold 500 ms、timer address `0x01f6`である。
+`floor(200000 / 16667) = 11 ticks`により期待どおり動作した。補間完了後の
+timer slotはnormalization、rise、fallの各観測で`0xffff`だったが、その正確な
+firmware意味論は引き続き未確認である。逐次read時間はnormalization
+`286.932 ms`、rise `222.331 ms`、fall `242.134 ms`だった。
+
+`hold_ms=500`はrise確認完了後の最低保持時間であり、物理的な最大輝度維持時間が
+厳密に500 msであることを意味しない。試験はWindowsからSSH forwarding経由で行い、
+Sota上で直接実行する場合はread latencyが小さくなる可能性がある。
+
+```text
+operator_observed_physical_illumination = true
+```
+
+#### 18.0.7 未確認または今後の課題
 
 lock競合時の全応答、他processとの重複を安全に検出する方法、異常終了後の運用上の
 回復手順、Pythonからの安全なproduction LED write、`VsmdSotaCommandTarget`の

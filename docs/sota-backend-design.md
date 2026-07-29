@@ -314,8 +314,8 @@ server側stackが残る可能性があるため、postflight、再LOCK、UNLOCK�
 書いたためOutputが1までしか進まなかった。Vstone Javaと同じく、実機からpreflightで
 `MasterCtrlPeriod` (`0x0040`, U32 µs)を1回readし、durationをfloor変換したticksへ
 変換するよう修正した。同じperiodをprobe終了まで使うことで、1回の診断内でtimer換算
-基準が変わらない設計とした。修正版はFake検証までで、physical illumination gateは
-未完了である。
+基準が変わらない設計とした。このtimer換算修正時点ではFake検証までで、
+physical illumination gateは未完了だった。後述の同日実機試験で確認を進めた。
 
 CLIの`result=success`はprotocol、memory operation、cleanup、release、postflightの
 成功だけを表す。物理発光の自動確認ではないため、
@@ -350,9 +350,20 @@ selectorを切り替えない。selector切替後の処理が失敗した場合�
 実証された。一方、非原子的なOutput 13 / RemainingTime 0を旧判定が失敗扱いし、
 fade-downへ進まずtimer 0 cleanup後もOutput 16が残った。selectorはAudioDiffへ
 復元された。補間完了後にtimer slot `0xffff`も観測したが意味論は未確認であり、
-成功条件にはしない。physical illuminationは完了、bounded rise/hold/fallと
-安全なOutput 0終了は未完了の別gateとして扱う。CLIは目視を判定できないため
+成功条件にはしない。
+
+同日、逐次observation判定、selector切替前の正timer正規化、正timer fade-downを
+含む再試験が終了code 0で成功した。normalization、rise、hold、fall、cleanup、
+単一UNLOCK、routing復元がすべて完了し、試験後observer 3 samplesでOutput 0を
+確認した。operatorによる物理点灯、bounded rise/hold/fall、安全なOutput 0終了の
+3 gatesはcompleteである。CLIは目視を判定できないため
 `physical_illumination=not_verified`を引き続き表示する。
+
+逐次readにはSSH forwarding経由でnormalization `286.932 ms`、rise `222.331 ms`、
+fall `242.134 ms`を要した。したがってhold 500 msはrise確認後の最低保持時間であり、
+最大輝度の厳密な500 ms保持を保証しない。詳細な実測値と証拠inventoryは
+[`evidence/mouth-led-live-test-2026-07-29.md`](evidence/mouth-led-live-test-2026-07-29.md)
+を参照する。
 
 ```powershell
 python -m robot_controller.hardware.vsmd.app_manager_mouth_led_probe `

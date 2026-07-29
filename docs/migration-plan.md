@@ -253,8 +253,8 @@ lock取得を`VsmdLedLockUnavailableError`で拒否し、memory writeを行わ�
 * [ ] lock競合、non-LIFO、異常終了時の安全な回復手順
 * [ ] `UnavailableVsmdLedLock`からproduction candidateへの切替
 * [x] operatorがPython経路による物理mouth LED点灯を確認
-* [ ] bounded rise/hold/fall全体を実機で完了
-* [ ] probe終了時の安全なOutput 0を実機で確認
+* [x] bounded rise/hold/fall全体を実機で完了
+* [x] probe終了時の安全なOutput 0を実機で確認
 * [ ] Composition Root統合とproduction実機LED write
 
 2026-07-29のcontrol-ticks修正版live試験ではoperatorが物理LED点灯を確認した。
@@ -266,13 +266,21 @@ pulse lifecycleは別gateとして管理する。補間完了後timer slot `0xff
 
 ```text
 physical_illumination_observed = complete
-bounded_rise_hold_fall_sequence = incomplete
-safe_output_zero_after_probe = incomplete
+bounded_rise_hold_fall_sequence = complete
+safe_output_zero_after_probe = complete
 ```
+
+同日の修正版再試験では、11 ticksによる事前正規化、rise、500 ms hold、fade-down、
+cleanup、単一UNLOCK、postflightが終了code 0で完了した。試験後observer 3 samplesは
+selector `0x008a`、Target 0、Output 0、TriggerPointer `0x01f4`で一致した。
+operator確認と実測timingを含む記録は
+[`evidence/mouth-led-live-test-2026-07-29.md`](evidence/mouth-led-live-test-2026-07-29.md)
+を参照する。CLIの`physical_illumination=not_verified`は自動検出不能という意味で
+維持する。
 
 通常`aplay`のread-only observerではAudioDiff変化とTCP 6498 read-only動作を実機
 確認した。full observerのsamplingはbest-effortで非原子的であり、AudioDiff focused
-modeは将来課題である。live probeのcleanup直前補間完了判定はFake検証までとする。
+modeは将来課題である。
 
 ### 試験順序
 
