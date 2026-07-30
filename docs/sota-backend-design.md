@@ -543,7 +543,7 @@ thin_probe_uses_sota_vsmd_backend_in_code = complete
 sota_vsmd_backend_fake_regression = complete
 thin_probe_uses_sota_vsmd_backend = complete
 sota_vsmd_backend_regression_on_hardware = complete
-composition_root_opt_in = pending
+composition_root_opt_in = complete
 edison_python36_direct_execution = pending
 production_command_integration = pending
 ```
@@ -609,9 +609,18 @@ handlerにはmouth LED Backendを接続していない。
 ```text
 composition_root_opt_in_in_code = complete
 composition_root_fake_regression = complete
-composition_root_opt_in = pending
+composition_root_opt_in = complete
 edison_python36_direct_execution = pending
 production_command_integration = pending
 ```
 
-Composition Root経路の実機smokeとEdison-local CPython 3.6実行は未実施である。
+double opt-in configurationは実機試験で正常に解決された。Composition Rootは
+`SotaVsmdBackend`を生成し、Application Containerはsmoke CLIへ同Backendを供給した。
+物理pulse、Output 0への復帰、selectorとTriggerPointerの復元、同一keyによる単一
+LOCK/UNLOCKが成功した。
+
+production protocol、legacy protocol v1、command handler、Router、TCP connection
+handlerは引き続き未接続である。次のgateはEdison-local CPython 3.6実行である。
+
+詳細:
+[`evidence/mouth-led-composition-root-regression-2026-07-30.md`](evidence/mouth-led-composition-root-regression-2026-07-30.md)
