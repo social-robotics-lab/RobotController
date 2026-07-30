@@ -16,6 +16,11 @@ from robot_controller.mock_server import (
     MockApplicationConfig,
     create_mock_application,
 )
+from robot_controller.mouth_led_composition import (
+    BACKEND_MOCK,
+    MouthLedBackendSettings,
+)
+from robot_controller.protocol.current import MOUTH_LED_PULSE_WIRE_COMMAND
 from robot_controller.protocol.frame import encode_frame
 
 
@@ -88,6 +93,62 @@ def _send_all_legacy_commands(address):
         "HEAD_P": 0,
         "HEAD_Y": 0,
     }
+
+
+def _send_current_request(address, command, payload):
+    client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    client.settimeout(3.0)
+    try:
+        client.connect(address)
+        client.sendall(
+            encode_frame(command.encode("utf-8"))
+            + encode_frame(json.dumps(payload).encode("utf-8"))
+        )
+        header = _recv_exact(client, 4)
+        length = int.from_bytes(header, "big", signed=False)
+        return json.loads(_recv_exact(client, length).decode("utf-8"))
+    finally:
+        client.close()
+
+
+def test_composed_server_routes_v2_mouth_led_to_mock_backend_once():
+    application = create_mock_application(
+        MockApplicationConfig(
+            host="127.0.0.1",
+            port=0,
+            mouth_led_settings=MouthLedBackendSettings(
+                backend_kind=BACKEND_MOCK
+            ),
+        )
+    )
+    errors = []
+    server_thread = threading.Thread(
+        target=_run_application, args=(application, errors)
+    )
+    server_thread.start()
+    try:
+        assert application.server.wait_until_listening(5.0)
+        response = _send_current_request(
+            application.server.bound_address,
+            MOUTH_LED_PULSE_WIRE_COMMAND,
+            {
+                "request_id": "integration-1",
+                "payload": {
+                    "level": 16,
+                    "rise_ms": 200,
+                    "hold_ms": 500,
+                    "fall_ms": 200,
+                },
+            },
+        )
+    finally:
+        application.shutdown()
+        server_thread.join(5.0)
+
+    assert errors == []
+    assert response["status"] == "success"
+    assert response["request_id"] == "integration-1"
+    assert len(application.mouth_led_backend.calls) == 1
 
 
 def test_composed_mock_application_serves_stop_pose_and_read_axes(caplog):

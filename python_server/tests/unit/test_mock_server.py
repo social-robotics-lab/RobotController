@@ -121,6 +121,8 @@ def test_composition_constructs_dependencies_in_documented_order(monkeypatch):
     scheduler = object()
     command_target = object()
     router = object()
+    current_router = object()
+    backend_target = object()
     server = object()
 
     def profile_factory():
@@ -135,6 +137,16 @@ def test_composition_constructs_dependencies_in_documented_order(monkeypatch):
         def __new__(cls, actual_target):
             order.append(("router", actual_target))
             return router
+
+    class CurrentRouterFactory(object):
+        def __new__(cls, actual_target):
+            order.append(("current_router", actual_target))
+            return current_router
+
+    class BackendTargetFactory(object):
+        def __new__(cls, downstream, backend):
+            order.append(("backend_target", downstream, backend))
+            return backend_target
 
     class ServiceFactory(object):
         def __new__(cls, downstream, config=None):
@@ -172,6 +184,14 @@ def test_composition_constructs_dependencies_in_documented_order(monkeypatch):
     )
     monkeypatch.setattr(module, "LoggingCommandTarget", LoggingFactory)
     monkeypatch.setattr(module, "CommandRouter", RouterFactory)
+    monkeypatch.setattr(
+        module, "CurrentCommandRouter", CurrentRouterFactory
+    )
+    monkeypatch.setattr(
+        module,
+        "MouthLedBackendCommandTarget",
+        BackendTargetFactory,
+    )
     monkeypatch.setattr(module, "LegacyV1TcpServer", ServerFactory)
 
     application = module.create_mock_application(MockApplicationConfig())
@@ -179,10 +199,16 @@ def test_composition_constructs_dependencies_in_documented_order(monkeypatch):
     assert order == [
         "profile",
         ("target", {}),
-        ("service", application.target),
+        (
+            "backend_target",
+            application.target,
+            application.mouth_led_backend,
+        ),
+        ("service", backend_target),
         ("scheduler", application.service),
         ("logging", application.scheduler),
         ("router", application.command_target),
+        ("current_router", application.command_target),
         ("server", profile, router),
     ]
     assert application.server is server

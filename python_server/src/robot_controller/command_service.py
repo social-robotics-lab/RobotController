@@ -263,6 +263,11 @@ class SerializedRobotCommandTarget(RobotCommandTarget):
         # type: () -> typing.Mapping[str, int]
         return self._execute("read_axes", None, False)
 
+    def mouth_led_pulse(self, pulse):
+        # type: (typing.Any) -> typing.Any
+        """Serialize one mouth LED pulse through the existing worker."""
+        return self._execute("mouth_led_pulse", pulse, True)
+
     def _execute(self, command, payload, has_payload):
         # type: (str, typing.Any, bool) -> typing.Any
         current_thread_id = threading.current_thread().ident

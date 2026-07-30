@@ -877,3 +877,74 @@ AppManager command、VSMD command、timer計算に変更はない。
 
 詳細:
 [`evidence/mouth-led-edison-python36-regression-2026-07-30.md`](evidence/mouth-led-edison-python36-regression-2026-07-30.md)
+
+## 2026-07-30 production mouth LED command extension
+
+The repository previously implemented only legacy protocol v1. Because v1
+must not gain a command or a response, the production mouth LED command uses
+the already documented v2 command-prefix migration option on the same TCP
+server. It does not introduce a second server, port, frame codec, connection
+lifetime, or worker.
+
+The request uses the existing four-byte big-endian frame format:
+
+1. command frame: `v2/mouth_led_pulse`
+2. JSON payload frame:
+
+```json
+{
+  "request_id": "client-generated-correlation-id",
+  "payload": {
+    "level": 16,
+    "rise_ms": 200,
+    "hold_ms": 500,
+    "fall_ms": 200
+  }
+}
+```
+
+`request_id` is a non-empty string of at most 128 characters. Unknown fields
+are ignored, matching the existing v1 JSON-command policy. All four required
+pulse values must
+be JSON integers; booleans, null, strings, floats, negative values,
+non-standard `NaN`/`Infinity`, missing fields, unknown fields, and values
+outside the `MouthLedBackend` contract are rejected before Backend dispatch.
+
+Every recognized v2 command returns one JSON response frame. A success has
+this form:
+
+```json
+{
+  "version": 2,
+  "request_id": "client-generated-correlation-id",
+  "status": "success",
+  "command": "mouth_led_pulse",
+  "result": {
+    "pulse_completed": true,
+    "lock_pointer_converged": true
+  }
+}
+```
+
+`lock_pointer_converged` is present only when supplied by the Backend result.
+Responses do not expose memory addresses, lock keys, endpoints, packet data,
+or stack traces. Errors use `status=error` and an `error` object with `code`
+and a sanitized `message`. Codes used by this path are
+`PROTOCOL_DECODE_ERROR`, `VALIDATION_ERROR`, `UNKNOWN_COMMAND`,
+`MOUTH_LED_BACKEND_UNAVAILABLE`, `MOUTH_LED_OPERATION_FAILED`, and
+`INTERNAL_ERROR`.
+
+Legacy v1 remains byte-for-byte unchanged: its command table, frame limits,
+timeouts, response rules, and nine commands are unchanged. In particular,
+the unprefixed `mouth_led_pulse` name remains an unknown v1 command. Existing
+v1 clients never receive a new response.
+
+The production command code and Fake/localhost regression are complete.
+Hardware validation through the TCP production command path has not been
+performed:
+
+```text
+production_command_integration_in_code = complete
+production_command_fake_regression = complete
+production_command_integration = pending
+```

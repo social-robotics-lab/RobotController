@@ -4,7 +4,13 @@ import abc
 import collections
 import typing
 
-from robot_controller.models import IdleMotionSettings, Motion, Pose
+from robot_controller.models import (
+    IdleMotionSettings,
+    Motion,
+    MouthLedPulse,
+    Pose,
+)
+from robot_controller.hardware.mouth_led_backend import MouthLedBackend
 
 
 _RecordedCallBase = collections.namedtuple(
@@ -177,3 +183,63 @@ class RecordingCommandTarget(RobotCommandTarget):
         if exception is not None:
             raise exception
 
+
+class MouthLedBackendCommandTarget(RobotCommandTarget):
+    """Add the composed mouth LED backend to an existing command target."""
+
+    def __init__(self, downstream, mouth_led_backend):
+        # type: (RobotCommandTarget, MouthLedBackend) -> None
+        if not isinstance(downstream, RobotCommandTarget):
+            raise TypeError("downstream must implement RobotCommandTarget")
+        if not isinstance(mouth_led_backend, MouthLedBackend):
+            raise TypeError(
+                "mouth_led_backend must implement MouthLedBackend"
+            )
+        self._downstream = downstream
+        self._mouth_led_backend = mouth_led_backend
+
+    def play_wav(self, wav_data):
+        # type: (bytes) -> None
+        return self._downstream.play_wav(wav_data)
+
+    def stop_wav(self):
+        # type: () -> None
+        return self._downstream.stop_wav()
+
+    def play_pose(self, pose):
+        # type: (Pose) -> None
+        return self._downstream.play_pose(pose)
+
+    def stop_pose(self):
+        # type: () -> None
+        return self._downstream.stop_pose()
+
+    def play_motion(self, motion):
+        # type: (Motion) -> None
+        return self._downstream.play_motion(motion)
+
+    def stop_motion(self):
+        # type: () -> None
+        return self._downstream.stop_motion()
+
+    def play_idle_motion(self, settings):
+        # type: (IdleMotionSettings) -> None
+        return self._downstream.play_idle_motion(settings)
+
+    def stop_idle_motion(self):
+        # type: () -> None
+        return self._downstream.stop_idle_motion()
+
+    def read_axes(self):
+        # type: () -> typing.Mapping[str, int]
+        return self._downstream.read_axes()
+
+    def mouth_led_pulse(self, pulse):
+        # type: (MouthLedPulse) -> typing.Any
+        """Invoke the injected backend exactly once with validated values."""
+        return self._mouth_led_backend.pulse_mouth_led(
+            level=pulse.level,
+            rise_ms=pulse.rise_ms,
+            hold_ms=pulse.hold_ms,
+            fall_ms=pulse.fall_ms,
+        )

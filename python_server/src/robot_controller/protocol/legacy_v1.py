@@ -121,19 +121,37 @@ def read_request(
     """Read one request using command- and payload-stage timeouts."""
     if not isinstance(timeouts, LegacyV1Timeouts):
         raise TypeError("timeouts must be LegacyV1Timeouts")
+    command = read_command(sock, limits=limits, timeouts=timeouts)
+    return read_request_after_command(
+        sock, command, limits=limits, timeouts=timeouts
+    )
+
+
+def read_command(sock, limits=DEFAULT_LIMITS, timeouts=DEFAULT_TIMEOUTS):
+    # type: (socket.socket, LegacyV1Limits, LegacyV1Timeouts) -> str
+    """Read and decode the first command frame without classifying it."""
     with socket_timeout(sock, timeouts.command_timeout):
         try:
             command_bytes = read_frame(sock, limits.command_max_length)
         except ProtocolError as error:
             raise CommandFrameError(error) from error
-
     try:
         command = command_bytes.decode("utf-8", errors="strict")
     except UnicodeDecodeError as error:
         raise CommandDecodeError(command_bytes) from error
-
     if command == "":
         raise EmptyCommandError()
+    return command
+
+
+def read_request_after_command(
+    sock,
+    command,
+    limits=DEFAULT_LIMITS,
+    timeouts=DEFAULT_TIMEOUTS,
+):
+    # type: (socket.socket, str, LegacyV1Limits, LegacyV1Timeouts) -> LegacyV1Request
+    """Finish a legacy request after a shared handler read its command."""
 
     spec = COMMAND_SPECS.get(command)
     if spec is None:

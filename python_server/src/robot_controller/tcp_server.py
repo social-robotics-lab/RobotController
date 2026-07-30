@@ -9,6 +9,9 @@ import threading
 import typing
 
 from robot_controller.connection_handler import handle_connection
+from robot_controller.production_connection_handler import (
+    handle_production_connection,
+)
 from robot_controller.profiles import RobotProfile
 from robot_controller.protocol.commands import (
     DEFAULT_LIMITS,
@@ -129,8 +132,9 @@ class LegacyV1TcpServer(object):
         executor_factory=None,
         connection_handler=None,
         on_listening=None,
+        current_router=None,
     ):
-        # type: (RobotProfile, CommandRouter, typing.Optional[LegacyV1TcpServerConfig], typing.Optional[typing.Callable[..., typing.Any]], typing.Optional[typing.Callable[..., typing.Any]], typing.Optional[typing.Callable[..., typing.Any]], typing.Optional[typing.Callable[..., typing.Any]]) -> None
+        # type: (RobotProfile, CommandRouter, typing.Optional[LegacyV1TcpServerConfig], typing.Optional[typing.Callable[..., typing.Any]], typing.Optional[typing.Callable[..., typing.Any]], typing.Optional[typing.Callable[..., typing.Any]], typing.Optional[typing.Callable[..., typing.Any]], typing.Any) -> None
         if not isinstance(robot_profile, RobotProfile):
             raise TypeError("robot_profile must be RobotProfile")
         if not isinstance(router, CommandRouter):
@@ -149,7 +153,16 @@ class LegacyV1TcpServer(object):
         self._executor_factory = (
             executor_factory or concurrent.futures.ThreadPoolExecutor
         )
-        self._connection_handler = connection_handler or handle_connection
+        self._current_router = current_router
+        self._uses_current_protocol = (
+            connection_handler is None and current_router is not None
+        )
+        if connection_handler is not None:
+            self._connection_handler = connection_handler
+        elif current_router is not None:
+            self._connection_handler = handle_production_connection
+        else:
+            self._connection_handler = handle_connection
         self._on_listening = on_listening
 
         self._capacity = threading.BoundedSemaphore(config.max_workers)
@@ -373,13 +386,18 @@ class LegacyV1TcpServer(object):
         with self._state_lock:
             self._worker_thread_ids.add(thread_id)
         try:
-            self._connection_handler(
+            handler_arguments = [
                 client_socket,
                 self._robot_profile,
                 self._router,
+            ]
+            if self._uses_current_protocol:
+                handler_arguments.append(self._current_router)
+            self._connection_handler(
+                *handler_arguments,
                 session_limits=self._config.session_limits,
                 decoder_limits=self._config.decoder_limits,
-                session_timeouts=self._config.session_timeouts,
+                session_timeouts=self._config.session_timeouts
             )
         except Exception as error:
             logger.warning(

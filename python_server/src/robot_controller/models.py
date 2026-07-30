@@ -58,3 +58,13 @@ class DecodedCommand(_DecodedCommandBase):
 
     __slots__ = ()
 
+
+_MouthLedPulseBase = collections.namedtuple(
+    "_MouthLedPulseBase", ["level", "rise_ms", "hold_ms", "fall_ms"]
+)
+
+
+class MouthLedPulse(_MouthLedPulseBase):
+    """Validated arguments for one production mouth LED pulse command."""
+
+    __slots__ = ()

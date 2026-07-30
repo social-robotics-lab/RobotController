@@ -11,7 +11,9 @@ import threading
 import typing
 
 from robot_controller.command_service import SerializedRobotCommandTarget
+from robot_controller.current_router import CurrentCommandRouter
 from robot_controller.command_target import (
+    MouthLedBackendCommandTarget,
     RecordingCommandTarget,
     RobotCommandTarget,
 )
@@ -250,6 +252,10 @@ class LoggingCommandTarget(RobotCommandTarget):
         # type: () -> typing.Mapping[str, int]
         return self._invoke("read_axes", None, False)
 
+    def mouth_led_pulse(self, pulse):
+        # type: (typing.Any) -> typing.Any
+        return self._invoke("mouth_led_pulse", pulse, True)
+
     def _invoke(self, command, payload, has_payload):
         # type: (str, typing.Any, bool) -> typing.Any
         with self._lock:
@@ -283,6 +289,7 @@ class MockApplication(object):
         command_target=None,
         mouth_led_backend=None,
         mouth_led_backend_diagnostics=None,
+        current_router=None,
     ):
         # type: (MockApplicationConfig, RobotProfile, RecordingCommandTarget, SerializedRobotCommandTarget, CommandRouter, LegacyV1TcpServer, typing.Optional[MotionSchedulingCommandTarget], typing.Optional[RobotCommandTarget], typing.Optional[MouthLedBackend], typing.Any) -> None
         if mouth_led_backend is None:
@@ -303,6 +310,7 @@ class MockApplication(object):
         self._server = server
         self._mouth_led_backend = mouth_led_backend
         self._mouth_led_backend_diagnostics = mouth_led_backend_diagnostics
+        self._current_router = current_router
         self._shutdown_lock = threading.Lock()
 
     @property
@@ -357,6 +365,11 @@ class MockApplication(object):
         """Return the non-secret backend resolution diagnostics."""
         return self._mouth_led_backend_diagnostics
 
+    @property
+    def current_router(self):
+        # type: () -> typing.Optional[CurrentCommandRouter]
+        return self._current_router
+
     def run(self):
         # type: () -> None
         """Start the command worker before serving TCP in this thread."""
@@ -402,10 +415,14 @@ def create_mock_application(config, mouth_led_backend_resolver=None):
         (name, 0) for name in sorted(profile.allowed_servo_names)
     )
     target = MockRecordingCommandTarget(initial_axes)
-    service = SerializedRobotCommandTarget(target)
+    backend_target = MouthLedBackendCommandTarget(
+        target, resolution.backend
+    )
+    service = SerializedRobotCommandTarget(backend_target)
     scheduler = MotionSchedulingCommandTarget(service)
     command_target = LoggingCommandTarget(scheduler)
     router = CommandRouter(command_target)
+    current_router = CurrentCommandRouter(command_target)
 
     def log_listening(server):
         # type: (LegacyV1TcpServer) -> None
@@ -442,6 +459,7 @@ def create_mock_application(config, mouth_led_backend_resolver=None):
         router=router,
         config=server_config,
         on_listening=log_listening,
+        current_router=current_router,
     )
     return MockApplication(
         config,
@@ -454,6 +472,7 @@ def create_mock_application(config, mouth_led_backend_resolver=None):
         command_target=command_target,
         mouth_led_backend=resolution.backend,
         mouth_led_backend_diagnostics=resolution.diagnostics,
+        current_router=current_router,
     )
 
 

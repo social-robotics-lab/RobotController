@@ -681,3 +681,48 @@ LOCK、CONVERT、UNLOCKはそれぞれ1回だった。
 
 詳細:
 [`evidence/mouth-led-edison-python36-regression-2026-07-30.md`](evidence/mouth-led-edison-python36-regression-2026-07-30.md)
+
+## 2026-07-30 production mouth LED command integration
+
+The production command implementation now accepts
+`v2/mouth_led_pulse` on the existing TCP server, with the existing
+four-byte big-endian framing and one-connection/one-command lifetime. A v2
+prefix was necessary because the repository previously exposed only legacy
+v1 and v1 must not gain either a mouth LED command or a success/error
+response. The new path shares the server, timeouts, close timing, and
+serialized command worker; it is not a separate mouth LED protocol service.
+
+The JSON payload contains a required `request_id` and a nested `payload` with
+`level`, `rise_ms`, `hold_ms`, and `fall_ms`. Decoder validation delegates
+the accepted value ranges to the `MouthLedBackend` contract. Valid requests
+reach the Composition Root supplied Backend exactly once. Invalid requests
+make zero Backend calls, and the command layer performs no automatic retry.
+
+Fake and localhost tests cover valid dispatch, exact argument forwarding,
+structured success, unavailable default, invalid payloads, safe typed error
+translation, dry-run client behavior, and unchanged legacy v1 fallback. The
+diagnostic client is:
+
+```powershell
+python -m robot_controller.diagnostics.mouth_led_command_client
+```
+
+Without `--confirm-live-write`, it prints the exact command and JSON request
+but does not create a socket. The normal Backend default remains
+Unavailable, the Sota double opt-in names are unchanged, and server startup
+does not pulse, connect, lock, read, write, or sleep.
+
+Current gates:
+
+```text
+production_command_integration_in_code = complete
+production_command_fake_regression = complete
+production_command_integration = pending
+
+edison_python36_direct_execution = complete
+composition_root_opt_in = complete
+sota_vsmd_backend_regression_on_hardware = complete
+```
+
+`production_command_integration` remains pending until a human performs and
+documents the production TCP command test on hardware.

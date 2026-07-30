@@ -215,6 +215,13 @@ class MotionSchedulingCommandTarget(RobotCommandTarget):
             self._require_ready()
             return self._downstream.read_axes()
 
+    def mouth_led_pulse(self, pulse):
+        # type: (typing.Any) -> typing.Any
+        """Pass a pulse through the existing serialized command service."""
+        with self._control_lock:
+            self._require_ready()
+            return self._downstream.mouth_led_pulse(pulse)
+
     def play_pose(self, pose):
         # type: (Pose) -> None
         with self._control_lock:

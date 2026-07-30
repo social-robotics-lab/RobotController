@@ -685,3 +685,55 @@ TriggerPointer `0x01f4`へ復帰した。
 
 詳細:
 [`evidence/mouth-led-edison-python36-regression-2026-07-30.md`](evidence/mouth-led-edison-python36-regression-2026-07-30.md)
+
+## 16. Production command integration
+
+The Composition Root now wraps the existing robot target with
+`MouthLedBackendCommandTarget`, using the exact `MouthLedBackend` instance
+resolved from `MockApplicationConfig`. The wrapper is placed below the
+existing `SerializedRobotCommandTarget`, so `mouth_led_pulse` uses the same
+single command worker as the other commands. No new thread, queue, scheduler,
+retry, Backend construction, AppManager construction, or transport
+construction occurs in the handler.
+
+After strict v2 decoding, the current router passes one immutable
+`MouthLedPulse(level, rise_ms, hold_ms, fall_ms)` to the command target. The
+target calls the injected Backend exactly once:
+
+```text
+v2 production connection handler
+    -> CurrentCommandRouter
+    -> existing serialized command service
+    -> MouthLedBackendCommandTarget
+    -> Composition Root supplied MouthLedBackend.pulse_mouth_led()
+```
+
+The default remains `UnavailableMouthLedBackend`. Sending a valid command in
+that state returns `MOUTH_LED_BACKEND_UNAVAILABLE`; it does not construct a
+Sota Backend or open an AppManager/VSMD connection. The existing double
+opt-in remains unchanged:
+
+```text
+ROBOT_MOUTH_LED_BACKEND=sota_vsmd
+ROBOT_HARDWARE_LIVE_WRITE_ENABLED=true
+```
+
+Server construction and startup remain connection-free and pulse-free.
+Backend access starts only after a complete recognized command has passed
+validation. Typed VSMD transport, lock/interpolation-state, and cleanup
+failures are preserved as causes and translated to the sanitized
+`MOUTH_LED_OPERATION_FAILED` response. Unexpected failures become
+`INTERNAL_ERROR`.
+
+The code and Fake regression gates are complete; physical validation of this
+new TCP route remains pending:
+
+```text
+production_command_integration_in_code = complete
+production_command_fake_regression = complete
+production_command_integration = pending
+
+edison_python36_direct_execution = complete
+composition_root_opt_in = complete
+sota_vsmd_backend_regression_on_hardware = complete
+```
