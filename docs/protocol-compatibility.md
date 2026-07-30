@@ -860,3 +860,20 @@ poll interval: 0.01 second
 期待pointerへ収束するまでselector、Target、rise/fade-down timerなどのmouth LED
 制御writeは行わない。timeoutまたはread失敗時は既存のtyped errorとcleanup経路を
 使用し、UNLOCKは最大1回である。
+
+### Edison-local CPython 3.6.15での収束確認
+
+修正後のComposition Root smoke CLIをEdison上のCPython 3.6.15から直接実行した。
+SSH port forwardingは使用していない。最初のTriggerPointer readは旧値`0x01f4`を
+返し、約13 ms後のpoll attempt 1でlease pointer `0x01f6`へ収束した。
+
+PCAPでは`INTERP_LOCK`、`INTERP_CNV_KEY_2_ADDR`、`INTERP_UNLOCK`がそれぞれ1回で
+あり、LOCKとCONVERTの再試行はなかった。pointer収束後に既存のselector、Target、
+timer writeが行われ、物理pulseとcleanupが成功した。
+
+この結果はAppManager成功応答とVSMD pointer可視化が非原子的であるという観測と、
+同一leaseに対するbounded read pollingの有効性を確認する。wire format、
+AppManager command、VSMD command、timer計算に変更はない。
+
+詳細:
+[`evidence/mouth-led-edison-python36-regression-2026-07-30.md`](evidence/mouth-led-edison-python36-regression-2026-07-30.md)

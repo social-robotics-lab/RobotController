@@ -536,12 +536,12 @@ M11: Operational release
 * [x] `MouthLedBackend`共通契約、Mock、Unavailableを追加
 * [x] opt-in用途の`SotaVsmdBackend`を追加し同一インスタンス内を直列化
 * [x] FakeによるLOCK/UNLOCK、normalization、rise/hold/fall、cleanup回帰を移行
-* [ ] Composition Rootへの接続
-* [ ] Edison CPython 3.6.15でのopt-in統合確認
+* [x] Composition Rootへの接続
+* [x] Edison CPython 3.6.15でのopt-in統合確認
 
-Composition Rootへの接続はこの変更の対象外とし、既定BackendはUnavailableの
-まま維持する。次のgateは人間が内容を確認した上で行うEdison Python 3.6実行と、
-別途設計する明示的opt-in統合である。
+抽出時点ではComposition Rootへの接続を対象外とし、既定BackendをUnavailableの
+まま維持した。後続stageで明示的opt-in接続とEdison CPython 3.6.15実機確認を
+完了した。既定Backendは引き続きUnavailableである。
 
 ## 2026-07-30 mouth LED抽出後の実機回帰
 
@@ -566,7 +566,7 @@ sota_vsmd_backend_fake_regression = complete
 thin_probe_uses_sota_vsmd_backend = complete
 sota_vsmd_backend_regression_on_hardware = complete
 composition_root_opt_in = complete
-edison_python36_direct_execution = pending
+edison_python36_direct_execution = complete
 production_command_integration = pending
 ```
 
@@ -634,7 +634,7 @@ Containerから取得したBackendへ1回委譲する。
 composition_root_opt_in_in_code = complete
 composition_root_fake_regression = complete
 composition_root_opt_in = complete
-edison_python36_direct_execution = pending
+edison_python36_direct_execution = complete
 production_command_integration = pending
 ```
 
@@ -643,8 +643,9 @@ double opt-in configurationは実機試験で正常に解決され、Composition
 物理pulseは成功し、Output 0、selector `0x008a`、TriggerPointer `0x01f4`へ復帰した。
 同一keyによる単一LOCKと単一UNLOCKも完了した。
 
-production protocolは引き続き未接続である。次のgateはEdison-local Python 3.6
-実行である。
+production protocolは引き続き未接続である。Composition Root実機smokeと
+Edison-local Python 3.6実行は後続試験でcompleteとなり、次のgateはproduction
+command integrationである。
 
 詳細:
 [`evidence/mouth-led-composition-root-regression-2026-07-30.md`](evidence/mouth-led-composition-root-regression-2026-07-30.md)
@@ -660,14 +661,23 @@ AppManager lease取得とVSMD TriggerPointer可視化が原子的ではないた
 pollingする。収束前のselector、Target、pulse timer writeは禁止する。timeoutまたは
 read失敗では既存cleanupを使い、UNLOCKは最大1回とする。
 
-この失敗だけをPython 3.6非互換とは扱わず、新しい成功Evidenceもまだ作成しない。
-修正後のEdison-local実行が成功するまでgateは次のままとする。
+この失敗だけをPython 3.6非互換とは扱わない。修正後のEdison-local実行は成功し、
+新しいEvidenceへ記録した。
 
 ```text
 composition_root_opt_in = complete
-edison_python36_direct_execution = pending
+edison_python36_direct_execution = complete
 production_command_integration = pending
 ```
 
-次のvalidation stageは、オペレータによるEdison-local Python 3.6 smokeの再実行で
-ある。
+Edison-local CPython 3.6.15からComposition Root smoke CLIを直接実行し、成功した。
+SSH port forwardingは使用せず、Python、Composition Root、AppManager、VSMDを
+Edison上で実行した。最初のTriggerPointer readは旧値`0x01f4`だったが、bounded
+pollingは約13 ms後にlease pointer `0x01f6`へ収束した。LOCKとCONVERTは再試行せず、
+LOCK、CONVERT、UNLOCKはそれぞれ1回だった。
+
+物理pulseは成功し、試験後はOutput 0、selector `0x008a`、TriggerPointer `0x01f4`
+へ復帰した。次のvalidation stageはproduction command integrationである。
+
+詳細:
+[`evidence/mouth-led-edison-python36-regression-2026-07-30.md`](evidence/mouth-led-edison-python36-regression-2026-07-30.md)

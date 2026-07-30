@@ -544,12 +544,12 @@ sota_vsmd_backend_fake_regression = complete
 thin_probe_uses_sota_vsmd_backend = complete
 sota_vsmd_backend_regression_on_hardware = complete
 composition_root_opt_in = complete
-edison_python36_direct_execution = pending
+edison_python36_direct_execution = complete
 production_command_integration = pending
 ```
 
-次のvalidation stageは、Composition Root経路の人手による実機smoke、
-Edison-local Python 3.6実行、production command integrationである。
+Composition Root経路の人手による実機smokeとEdison-local Python 3.6実行は後続で
+completeとなった。次のvalidation stageはproduction command integrationである。
 
 詳細:
 [`evidence/mouth-led-pulse-operation-regression-2026-07-30.md`](evidence/mouth-led-pulse-operation-regression-2026-07-30.md)
@@ -610,7 +610,7 @@ handlerにはmouth LED Backendを接続していない。
 composition_root_opt_in_in_code = complete
 composition_root_fake_regression = complete
 composition_root_opt_in = complete
-edison_python36_direct_execution = pending
+edison_python36_direct_execution = complete
 production_command_integration = pending
 ```
 
@@ -620,7 +620,8 @@ double opt-in configurationは実機試験で正常に解決された。Composit
 LOCK/UNLOCKが成功した。
 
 production protocol、legacy protocol v1、command handler、Router、TCP connection
-handlerは引き続き未接続である。次のgateはEdison-local CPython 3.6実行である。
+handlerは引き続き未接続である。Edison-local CPython 3.6実行は後続試験でcomplete
+となり、次のgateはproduction command integrationである。
 
 詳細:
 [`evidence/mouth-led-composition-root-regression-2026-07-30.md`](evidence/mouth-led-composition-root-regression-2026-07-30.md)
@@ -667,10 +668,20 @@ lock_pointer_converged
 ```
 
 既存のoperation、Backend、Composition Root、production isolation gateは変更しない。
-Edison-local修正後の成功確認は未実施である。
+Edison-local CPython 3.6.15による修正後の成功確認を実施した。
 
 ```text
 composition_root_opt_in = complete
-edison_python36_direct_execution = pending
+edison_python36_direct_execution = complete
 production_command_integration = pending
 ```
+
+最初のTriggerPointer readは旧値`0x01f4`を返し、poll attempt 1で約13 ms後に
+lease pointer `0x01f6`へ収束した。LOCKとCONVERTは再試行されず、LOCK、CONVERT、
+UNLOCKはそれぞれ1回だった。物理pulseは成功し、Output 0、selector `0x008a`、
+TriggerPointer `0x01f4`へ復帰した。
+
+次のgateはproduction command integrationである。
+
+詳細:
+[`evidence/mouth-led-edison-python36-regression-2026-07-30.md`](evidence/mouth-led-edison-python36-regression-2026-07-30.md)
