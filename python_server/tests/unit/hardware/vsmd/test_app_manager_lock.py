@@ -18,9 +18,11 @@ from robot_controller.hardware.vsmd.app_manager_lock import (
     validate_timer_address,
 )
 from robot_controller.hardware.vsmd.errors import (
+    AppManagerAcquireCleanupError,
     AppManagerLockRejectedError,
     AppManagerOutcomeUnknownError,
     AppManagerProtocolError,
+    AppManagerTimeoutError,
     AppManagerTimerAddressError,
     AppManagerUnlockError,
     VsmdValidationError,
@@ -98,6 +100,15 @@ def test_lock_ng_is_rejected_without_convert_or_cleanup():
     assert len(transport.requests) == 1
 
 
+def test_lock_transport_timeout_is_typed_without_convert_or_cleanup():
+    lock, transport = make_lock(
+        [AppManagerTimeoutError("fake lock timeout")]
+    )
+    with pytest.raises(AppManagerTimeoutError, match="lock timeout"):
+        lock.acquire_leds([14])
+    assert len(transport.requests) == 1
+
+
 @pytest.mark.parametrize(
     "convert_result",
     [SERIALIZED_NULL, serialized_short(494), serialized_short(501), serialized_short(560)],
@@ -129,7 +140,7 @@ def test_convert_timeout_performs_cleanup_then_preserves_unknown_outcome():
     assert len(transport.requests) == 3
 
 
-def test_failed_cleanup_with_unknown_result_raises_cleanup_unknown():
+def test_failed_cleanup_preserves_convert_and_unlock_errors():
     lock, transport = make_lock(
         [
             SERIALIZED_OK,
@@ -137,11 +148,46 @@ def test_failed_cleanup_with_unknown_result_raises_cleanup_unknown():
             AppManagerOutcomeUnknownError("unlock unknown"),
         ]
     )
-    with pytest.raises(
-        AppManagerOutcomeUnknownError, match="cleanup outcome is unknown"
-    ):
+    with pytest.raises(AppManagerAcquireCleanupError) as caught:
+        lock.acquire_leds([14])
+    assert isinstance(
+        caught.value.acquisition_error, AppManagerTimerAddressError
+    )
+    assert isinstance(
+        caught.value.cleanup_error, AppManagerOutcomeUnknownError
+    )
+    assert len(transport.requests) == 3
+
+
+@pytest.mark.parametrize(
+    "convert_result,expected_error",
+    [
+        (SERIALIZED_NG, AppManagerTimerAddressError),
+        (SERIALIZED_NULL, AppManagerTimerAddressError),
+        (b"not-java-serialization", AppManagerProtocolError),
+        (
+            AppManagerOutcomeUnknownError("convert timeout"),
+            AppManagerOutcomeUnknownError,
+        ),
+        (
+            AppManagerProtocolError("convert EOF"),
+            AppManagerProtocolError,
+        ),
+    ],
+)
+def test_each_convert_failure_unlocks_once_and_preserves_primary(
+    convert_result, expected_error
+):
+    lock, transport = make_lock(
+        [SERIALIZED_OK, convert_result, SERIALIZED_OK]
+    )
+    with pytest.raises(expected_error):
         lock.acquire_leds([14])
     assert len(transport.requests) == 3
+    assert sum(
+        b'"cmd":"INTERP_UNLOCK"' in request
+        for request in transport.requests
+    ) == 1
 
 
 def test_release_uses_owned_key_and_ids_and_succeeds_once():

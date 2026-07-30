@@ -81,3 +81,23 @@ def test_backend_target_forwards_values_unchanged():
     target.mouth_led_pulse(MouthLedPulse(1, 50, 100, 50))
 
     assert tuple(backend.calls[0]) == (1, 50, 100, 50)
+
+
+@pytest.mark.parametrize(
+    "signal",
+    [KeyboardInterrupt("fake interrupt"), SystemExit("fake exit")],
+)
+def test_process_control_signal_is_not_converted_to_success_response(signal):
+    backend = MockMouthLedBackend(failure=signal)
+    target = MouthLedBackendCommandTarget(
+        RecordingCommandTarget(), backend
+    )
+    service = SerializedRobotCommandTarget(target)
+    service.start()
+    assert service.wait_until_ready(2.0)
+    try:
+        with pytest.raises(type(signal)) as caught:
+            CurrentCommandRouter(service).dispatch(request())
+    finally:
+        service.shutdown()
+    assert caught.value is signal

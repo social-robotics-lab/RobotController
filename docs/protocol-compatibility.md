@@ -939,12 +939,46 @@ timeouts, response rules, and nine commands are unchanged. In particular,
 the unprefixed `mouth_led_pulse` name remains an unknown v1 command. Existing
 v1 clients never receive a new response.
 
-The production command code and Fake/localhost regression are complete.
-Hardware validation through the TCP production command path has not been
-performed:
+The production command code, Fake/localhost regression, and the separately
+recorded Edison production-command validation are complete:
 
 ```text
 production_command_integration_in_code = complete
 production_command_fake_regression = complete
-production_command_integration = pending
+production_command_integration = complete
+phase7_mouth_led_golden_path = complete
 ```
+
+#### 18.0.10 Phase 7 fault-recovery compatibility boundary
+
+Fault recovery does not change the AppManager wire format or the production
+v1/v2 protocol. Within one `AppManagerVsmdLedLock` instance, overlapping LED
+IDs fail before a second LOCK is sent. Independent adapters do not share
+local state; their arbitration is delegated to AppManager. A LOCK `NG` is a
+typed rejection and causes no CONVERT, UNLOCK, or Python VSMD read/write.
+This cross-client behavior is covered by a shared Fake AppManager; live
+lock-contention behavior remains unverified.
+
+After LOCK succeeds, every CONVERT failure attempts at most one best-effort
+UNLOCK using the exact generated key and immutable IDs. There is no automatic
+LOCK, CONVERT, socket, or pulse retry. If CONVERT and UNLOCK both fail,
+`AppManagerAcquireCleanupError` retains both typed errors without exposing the
+key, endpoint, memory address, or stack trace through the production error
+response.
+
+Normal exceptions, `KeyboardInterrupt`, and `SystemExit` enter best-effort
+pulse cleanup. Hard termination such as `kill -9`, kernel panic, or power
+loss cannot run Python `finally` and therefore has no code-level cleanup
+guarantee. Unknown-key UNLOCK, blind/global UNLOCK, inferred VSMD writes, and
+automatic AppManager or `vsmd_edison` service control are prohibited.
+
+```text
+phase7_fault_recovery_in_code = complete
+phase7_fault_recovery_fake_regression = complete
+phase7_fault_recovery = pending
+full_sota_command_target_integration = pending
+```
+
+The pending gate requires a separately reviewed, manually initiated,
+lock-only hardware contention test. The verified production mouth LED normal
+path remains unchanged.

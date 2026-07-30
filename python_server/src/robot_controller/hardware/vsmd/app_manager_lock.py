@@ -17,11 +17,10 @@ from robot_controller.hardware.vsmd.app_manager_transport import (
     AppManagerTcpTransport,
 )
 from robot_controller.hardware.vsmd.errors import (
-    AppManagerConnectionError,
+    AppManagerAcquireCleanupError,
     AppManagerLockRejectedError,
     AppManagerOutcomeUnknownError,
     AppManagerProtocolError,
-    AppManagerTimeoutError,
     AppManagerTimerAddressError,
     AppManagerUnexpectedResponseError,
     AppManagerUnlockError,
@@ -245,27 +244,10 @@ class AppManagerLedLock(object):
                 raise AppManagerUnlockError(
                     "best-effort unlock did not return OK"
                 )
-        except AppManagerOutcomeUnknownError as cleanup_error:
-            raise AppManagerOutcomeUnknownError(
-                "lock acquisition failed and cleanup outcome is unknown"
+        except BaseException as cleanup_error:
+            raise AppManagerAcquireCleanupError(
+                acquisition_error, cleanup_error
             ) from cleanup_error
-        except AppManagerProtocolError as cleanup_error:
-            raise AppManagerOutcomeUnknownError(
-                "lock acquisition failed and cleanup response was malformed"
-            ) from cleanup_error
-        except AppManagerUnexpectedResponseError as cleanup_error:
-            raise AppManagerOutcomeUnknownError(
-                "lock acquisition failed and cleanup response was unexpected"
-            ) from cleanup_error
-        except (
-            AppManagerConnectionError,
-            AppManagerTimeoutError,
-        ) as cleanup_error:
-            raise AppManagerUnlockError(
-                "lock acquisition failed before cleanup could be submitted"
-            ) from cleanup_error
-        except AppManagerUnlockError:
-            raise
 
     def _exchange(self, request_json):
         # type: (bytes) -> typing.Union[str, int, None]

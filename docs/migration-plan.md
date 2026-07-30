@@ -755,3 +755,50 @@ integration, or Sota single-axis servo control.
 
 Detailed production-command evidence:
 [`evidence/mouth-led-production-command-visual-confirmation-2026-07-30.md`](evidence/mouth-led-production-command-visual-confirmation-2026-07-30.md)
+
+## Phase 7 mouth LED fault recovery
+
+Phase 7の異常系をFake transportとFake memoryで固定した。同一
+`AppManagerVsmdLedLock`内でactive leaseとLED IDが重複した場合は、2件目を
+AppManager request前に`VsmdMouthLedStateError`で拒否する。異なるadapter間の
+排他判断はAppManagerへ委譲し、LOCKが`NG`なら
+`AppManagerLockRejectedError`となり、CONVERT、UNLOCK、VSMD read/writeを行わない。
+このcross-client挙動は共有Fake AppManagerで検証したものであり、実機競合試験の
+完了を意味しない。
+
+leaseは生成keyとIDsを所有し、UNLOCKは最大1回である。成功したrelease後は予約を
+解除し、異なるkeyとCONVERT結果で再取得できる。CONVERTが`NG`、`null`、不正
+serialization、timeout、EOFで失敗した場合は、同じkey/IDsのbest-effort UNLOCKを
+最大1回だけ行い、VSMD control writeへ進まない。CONVERTとUNLOCKがともに失敗した
+場合は`AppManagerAcquireCleanupError`が`acquisition_error`と`cleanup_error`を
+保持する。
+
+pulseはselector切替、rise、hold、fade-down、postflightの通常例外、
+`KeyboardInterrupt`、`SystemExit`を`BaseException` cleanup経路へ通す。可能な範囲で
+Target 0、timer 0、selector復元を試み、UNLOCKは最大1回で、元の処理失敗を成功へ
+変換しない。LOCK、CONVERT、pulse全体の自動retryはない。
+
+Fake-only diagnostic:
+
+```powershell
+python -m robot_controller.diagnostics.mouth_led_fault_recovery_smoke
+```
+
+これはsocketを生成せず、live networkとlive writeを使用しない。hard termination
+（`kill -9`、kernel panic、電源断）ではPython cleanupを保証できない。未知keyの
+自動UNLOCK、全LEDのblind UNLOCK、AppManager／`vsmd_edison`／serviceの自動停止・
+再起動、推測によるVSMD memory writeは行わない。operator recoveryは
+[`operations/sota-mouth-led-lock-recovery.md`](operations/sota-mouth-led-lock-recovery.md)
+に分離した。
+
+```text
+phase7_fault_recovery_in_code = complete
+phase7_fault_recovery_fake_regression = complete
+phase7_fault_recovery = pending
+
+phase7_mouth_led_golden_path = complete
+production_command_integration = complete
+full_sota_command_target_integration = pending
+```
+
+`phase7_fault_recovery`は実機lock-only競合試験が完了するまでpendingとする。

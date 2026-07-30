@@ -1380,6 +1380,54 @@ def test_operation_and_cleanup_failure_preserve_both_errors():
 
 
 @pytest.mark.parametrize(
+    "signal",
+    [KeyboardInterrupt("fake interrupt"), SystemExit("fake exit")],
+)
+def test_process_control_signal_during_hold_cleans_up_then_propagates(signal):
+    sleep_calls = [0]
+
+    def interrupt_hold(unused_seconds):
+        sleep_calls[0] += 1
+        if sleep_calls[0] == 2:
+            raise signal
+
+    probe, memory, transport, unused_sleeps = make_probe(
+        sleep_function=interrupt_hold
+    )
+    with pytest.raises(type(signal)) as caught:
+        probe.run()
+    assert caught.value is signal
+    assert probe.emergency_fade_down_attempted is True
+    assert probe.cleanup_completed is True
+    assert ("WRITE", MOUTH_LED_SELECTOR_ADDRESS, b"\x8a\x00") in writes(
+        memory
+    )
+    assert commands(transport).count(INTERP_UNLOCK_COMMAND) == 1
+
+
+@pytest.mark.parametrize(
+    "write_number,stage",
+    [
+        (1, "selector"),
+        (2, "rise target"),
+        (3, "rise timer"),
+        (4, "fade target"),
+        (5, "fade timer"),
+    ],
+)
+def test_write_stage_failures_attempt_cleanup_and_single_unlock(
+    write_number, stage
+):
+    probe, memory, transport, unused_sleeps = make_probe()
+    memory.fail_write_numbers.add(write_number)
+    with pytest.raises(BaseException):
+        probe.run()
+    assert commands(transport).count(INTERP_LOCK_COMMAND) == 1, stage
+    assert commands(transport).count(INTERP_UNLOCK_COMMAND) == 1, stage
+    assert probe.pulse_completed is False
+
+
+@pytest.mark.parametrize(
     "unlock_response,expected_error,expected_state",
     [
         (

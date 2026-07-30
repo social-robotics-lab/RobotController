@@ -13,6 +13,9 @@ from robot_controller.hardware.mouth_led_backend import (
     UnavailableMouthLedBackend,
 )
 from robot_controller.hardware.vsmd.errors import (
+    AppManagerAcquireCleanupError,
+    AppManagerTimerAddressError,
+    AppManagerUnlockError,
     VsmdMouthLedCleanupError,
     VsmdTransportError,
 )
@@ -166,6 +169,28 @@ def test_cleanup_failure_is_sanitized_and_preserves_primary_chain():
 
     response = frame_body(sock.sent_data[0])
     assert response["error"]["code"] == "MOUTH_LED_OPERATION_FAILED"
+    assert len(backend.calls) == 1
+
+
+def test_app_manager_acquire_cleanup_failure_is_sanitized():
+    primary = AppManagerTimerAddressError("secret key and address")
+    cleanup = AppManagerUnlockError("secret endpoint")
+    failure = AppManagerAcquireCleanupError(primary, cleanup)
+    backend = MockMouthLedBackend(failure)
+    _, legacy_router, current_router = parts(backend)
+    sock = FakeSocket(wire())
+
+    handle_production_connection(
+        sock, profile(), legacy_router, current_router
+    )
+
+    response = frame_body(sock.sent_data[0])
+    serialized = json.dumps(response)
+    assert response["error"]["code"] == "MOUTH_LED_OPERATION_FAILED"
+    assert "secret key" not in serialized
+    assert "secret endpoint" not in serialized
+    assert failure.acquisition_error is primary
+    assert failure.cleanup_error is cleanup
     assert len(backend.calls) == 1
 
 

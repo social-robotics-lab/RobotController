@@ -762,3 +762,40 @@ full_sota_command_target_integration = pending
 
 Detailed production-command evidence:
 [`evidence/mouth-led-production-command-visual-confirmation-2026-07-30.md`](evidence/mouth-led-production-command-visual-confirmation-2026-07-30.md)
+
+## 17. mouth LED fault-recovery boundary
+
+同一`AppManagerVsmdLedLock` instanceは、activeなLED IDの重複をlocal reservationで
+AppManager送信前にfail-closed拒否する。別instanceは状態を共有せず、cross-process
+相当の競合判断をAppManagerへ委譲する。LOCK拒否後はCONVERT、UNLOCK、VSMD
+read/writeへ進まず、再試行もしない。
+
+`AppManagerLedLockLease`だけが生成key、immutable IDs、CONVERT済みtimer addressを
+所有する。releaseは単回attemptであり、成功後だけadapter reservationを解放する。
+失敗またはoutcome unknownではreservationを維持して再取得を拒否する。CONVERT後の
+best-effort UNLOCKも1回だけで、双方が失敗した場合は
+`AppManagerAcquireCleanupError`にprimary acquisition errorとcleanup errorを保持する。
+
+`SotaMouthLedPulseOperation`と`SotaMouthLedController`は`BaseException`をcleanup
+対象にするため、通常例外に加えて`KeyboardInterrupt`と`SystemExit`でも、可能な
+Target 0、timer 0、selector復元、単一UNLOCKを試みる。cleanup不能を成功結果には
+しない。production command層の成功応答へも変換しない。hard terminationでは
+`finally`自体が動かないため、コード上の完全回復は保証しない。
+
+Fake-only smokeは次で実行でき、live transportやsocketを生成しない。
+
+```powershell
+python -m robot_controller.diagnostics.mouth_led_fault_recovery_smoke
+```
+
+運用回復手順は
+[`operations/sota-mouth-led-lock-recovery.md`](operations/sota-mouth-led-lock-recovery.md)
+を参照する。production正常系シーケンス、公開`MouthLedBackend` API、v1/v2 wire
+protocolは変更しない。
+
+```text
+phase7_fault_recovery_in_code = complete
+phase7_fault_recovery_fake_regression = complete
+phase7_fault_recovery = pending
+full_sota_command_target_integration = pending
+```

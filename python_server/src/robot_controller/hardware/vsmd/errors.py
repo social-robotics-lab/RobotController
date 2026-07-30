@@ -208,3 +208,22 @@ class AppManagerUnlockError(AppManagerError):
 
 class AppManagerOutcomeUnknownError(AppManagerError):
     """A submitted request may have taken effect and must not be retried."""
+
+
+class AppManagerAcquireCleanupError(AppManagerError):
+    """A lock conversion and its one best-effort unlock both failed."""
+
+    def __init__(self, acquisition_error, cleanup_error):
+        # type: (BaseException, BaseException) -> None
+        self.acquisition_error = acquisition_error
+        self.cleanup_error = cleanup_error
+        AppManagerError.__init__(
+            self,
+            (
+                "AppManager acquisition failed with {0}; cleanup failed "
+                "with {1}"
+            ).format(
+                type(acquisition_error).__name__,
+                type(cleanup_error).__name__,
+            ),
+        )
