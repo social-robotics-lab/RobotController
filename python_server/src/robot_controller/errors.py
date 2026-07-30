@@ -474,6 +474,14 @@ class HardwareProbeError(Exception):
     """Base class for isolated hardware capability-probe failures."""
 
 
+class HardwareBackendError(Exception):
+    """Base class for reusable hardware-backend operation failures."""
+
+
+class HardwareBackendUnavailableError(HardwareBackendError):
+    """A requested hardware operation has no configured implementation."""
+
+
 class UnsupportedHardwarePlatformError(HardwareProbeError):
     """The requested real transport is unavailable on this platform."""
 
