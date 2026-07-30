@@ -6,7 +6,7 @@ import sys
 import time
 import typing
 
-from robot_controller.hardware.vsmd.app_manager_lock import AppManagerLedLock
+from robot_controller.hardware.sota.backend import SotaVsmdBackend
 from robot_controller.hardware.vsmd.app_manager_mouth_led_pulse import (
     ActiveInterpolationState,
     DEFAULT_LIVE_HOLD_MS,
@@ -19,20 +19,15 @@ from robot_controller.hardware.vsmd.app_manager_mouth_led_pulse import (
     MIN_LIVE_LEVEL,
     MouthLedPulseResult,
     MouthLedPulseSnapshot,
-    SotaMouthLedPulseOperation,
     validate_mouth_led_duration,
     validate_mouth_led_hold,
     validate_mouth_led_level,
-    _validate_release_success,
 )
 from robot_controller.hardware.vsmd.app_manager_transport import (
     AppManagerTcpTransport,
     DEFAULT_APP_MANAGER_HOST,
     DEFAULT_APP_MANAGER_PORT,
     DEFAULT_APP_MANAGER_TIMEOUT_SECONDS,
-)
-from robot_controller.hardware.vsmd.app_manager_vsmd_lock import (
-    AppManagerVsmdLedLock,
 )
 from robot_controller.hardware.vsmd.constants import (
     DEFAULT_CONNECT_TIMEOUT_SECONDS,
@@ -42,18 +37,14 @@ from robot_controller.hardware.vsmd.constants import (
     DEFAULT_READ_TIMEOUT_SECONDS,
     DEFAULT_WRITE_TIMEOUT_SECONDS,
 )
-from robot_controller.hardware.vsmd.memory import VsmdMemoryClient
 from robot_controller.hardware.vsmd.sota_memory_map import (
     SOTA_MOUTH_GLOBAL_LED_ID,
 )
 from robot_controller.hardware.vsmd.transport import VsmdTcpTransport
-from robot_controller.hardware.vsmd.typed_memory import VsmdTypedMemory
 
 
-# Compatibility names retained for existing diagnostic consumers.
 ProbeSnapshot = MouthLedPulseSnapshot
 ProbeResult = MouthLedPulseResult
-AppManagerMouthLedLiveProbe = SotaMouthLedPulseOperation
 _validate_live_level = validate_mouth_led_level
 _validate_live_duration = validate_mouth_led_duration
 _validate_live_hold = validate_mouth_led_hold
@@ -171,11 +162,6 @@ def create_argument_parser():
     return parser
 
 
-def _default_memory_factory(transport):
-    # type: (VsmdTcpTransport) -> VsmdTypedMemory
-    return VsmdTypedMemory(VsmdMemoryClient(transport))
-
-
 def _print_snapshot(prefix, snapshot, output):
     # type: (str, typing.Optional[ProbeSnapshot], typing.Any) -> None
     if snapshot is None:
@@ -195,7 +181,7 @@ def _print_snapshot(prefix, snapshot, output):
 
 
 def _print_lease(lease, output):
-    # type: (typing.Optional[AppManagerVsmdLedLockLease], typing.Any) -> None
+    # type: (typing.Any, typing.Any) -> None
     if lease is None:
         return
     print("lease_state={0}".format(lease.state), file=output)
@@ -311,10 +297,11 @@ def main(
     argv=None,
     vsmd_transport_factory=VsmdTcpTransport,
     app_manager_transport_factory=AppManagerTcpTransport,
-    memory_factory=_default_memory_factory,
+    memory_factory=None,
     sleep_function=time.sleep,
+    backend_factory=SotaVsmdBackend,
 ):
-    # type: (typing.Optional[typing.Sequence[str]], typing.Any, typing.Any, typing.Any, typing.Any) -> int
+    # type: (typing.Optional[typing.Sequence[str]], typing.Any, typing.Any, typing.Any, typing.Any, typing.Any) -> int
     """Run the live probe only after explicit confirmation."""
     arguments = create_argument_parser().parse_args(argv)
     print("Sota AppManager mouth LED live probe")
@@ -341,157 +328,157 @@ def main(
         )
     )
 
-    probe = None  # type: typing.Optional[SotaMouthLedPulseOperation]
+    backend = None  # type: typing.Any
     try:
-        vsmd_transport = vsmd_transport_factory(
-            host=arguments.vsmd_host,
-            port=arguments.vsmd_port,
-            connect_timeout=arguments.vsmd_connect_timeout,
-            read_timeout=arguments.vsmd_read_timeout,
-            write_timeout=arguments.vsmd_write_timeout,
-            max_line_length=arguments.vsmd_max_line_length,
+        backend = backend_factory(
+            app_manager_host=arguments.app_manager_host,
+            app_manager_port=arguments.app_manager_port,
+            app_manager_timeout=arguments.app_manager_timeout,
+            vsmd_host=arguments.vsmd_host,
+            vsmd_port=arguments.vsmd_port,
+            vsmd_connect_timeout=arguments.vsmd_connect_timeout,
+            vsmd_read_timeout=arguments.vsmd_read_timeout,
+            vsmd_write_timeout=arguments.vsmd_write_timeout,
+            vsmd_max_line_length=arguments.vsmd_max_line_length,
+            mouth_led_id=arguments.led_id,
+            vsmd_transport_factory=vsmd_transport_factory,
+            app_manager_transport_factory=app_manager_transport_factory,
+            memory_factory=memory_factory,
+            sleep_function=sleep_function,
+            preflight_callback=_print_timer_preflight,
         )
-        app_manager_transport = app_manager_transport_factory(
-            host=arguments.app_manager_host,
-            port=arguments.app_manager_port,
-            timeout=arguments.app_manager_timeout,
+        result = backend.pulse_mouth_led(
+            level=arguments.level,
+            rise_ms=arguments.duration_ms,
+            hold_ms=arguments.hold_ms,
+            fall_ms=arguments.duration_ms,
         )
-        app_manager_lock = AppManagerLedLock(
-            transport=app_manager_transport
-        )
-        adapter = AppManagerVsmdLedLock(app_manager_lock)
-        with vsmd_transport:
-            memory = memory_factory(vsmd_transport)
-            probe = SotaMouthLedPulseOperation(
-                memory,
-                adapter,
-                arguments.level,
-                arguments.duration_ms,
-                hold_ms=arguments.hold_ms,
-                sleep_function=sleep_function,
-            )
-            result = probe.run(
-                preflight_callback=_print_timer_preflight
-            )
     except BaseException as error:
-        if probe is not None:
-            _print_snapshot("pre", probe.preflight, sys.stderr)
-            if probe.master_control_period_us is not None:
+        diagnostics = (
+            None
+            if backend is None
+            else getattr(backend, "last_pulse_diagnostics", None)
+        )
+        if diagnostics is not None:
+            _print_snapshot("pre", diagnostics.preflight, sys.stderr)
+            if diagnostics.master_control_period_us is not None:
                 print(
                     "master_control_period_us={0}".format(
-                        probe.master_control_period_us
+                        diagnostics.master_control_period_us
                     ),
                     file=sys.stderr,
                 )
-            if probe.timer_ticks is not None:
+            if diagnostics.timer_ticks is not None:
                 print(
-                    "timer_ticks={0}".format(probe.timer_ticks),
+                    "timer_ticks={0}".format(diagnostics.timer_ticks),
                     file=sys.stderr,
                 )
-            if probe.locked_trigger_pointer is not None:
+            if diagnostics.locked_trigger_pointer is not None:
                 print(
                     "locked_trigger_pointer=0x{0:04x}".format(
-                        probe.locked_trigger_pointer
+                        diagnostics.locked_trigger_pointer
                     ),
                     file=sys.stderr,
                 )
             print(
                 "normalization_required={0}".format(
-                    str(probe.normalization_required).lower()
+                    str(diagnostics.normalization_required).lower()
                 ),
                 file=sys.stderr,
             )
-            if probe.normalization_timer_ticks is not None:
+            if diagnostics.normalization_timer_ticks is not None:
                 print(
                     "normalization_timer_ticks={0}".format(
-                        probe.normalization_timer_ticks
+                        diagnostics.normalization_timer_ticks
                     ),
                     file=sys.stderr,
                 )
             _print_interpolation_state(
                 "normalized",
-                probe.normalized_state,
-                probe.normalization_completed,
+                diagnostics.normalized_state,
+                diagnostics.normalization_completed,
                 sys.stderr,
             )
             _print_observation_history(
                 "normalization",
-                probe.normalization_observations,
+                diagnostics.normalization_observations,
                 sys.stderr,
             )
             print(
                 "normalization_completed={0}".format(
-                    str(probe.normalization_completed).lower()
+                    str(diagnostics.normalization_completed).lower()
                 ),
                 file=sys.stderr,
             )
             _print_interpolation_state(
                 "rise",
-                probe.active_state,
-                probe.interpolation_reached_target,
+                diagnostics.active_state,
+                diagnostics.interpolation_reached_target,
                 sys.stderr,
             )
             _print_observation_history(
-                "rise", probe.active_snapshots, sys.stderr
+                "rise", diagnostics.active_snapshots, sys.stderr
             )
             _print_interpolation_state(
                 "off",
-                probe.off_state,
-                probe.fade_down_completed,
+                diagnostics.off_state,
+                diagnostics.fade_down_completed,
                 sys.stderr,
             )
             _print_observation_history(
-                "fall", probe.off_snapshots, sys.stderr
+                "fall", diagnostics.off_snapshots, sys.stderr
             )
             _print_interpolation_state(
                 "emergency",
-                probe.emergency_state,
-                probe.emergency_fade_down_completed,
+                diagnostics.emergency_state,
+                diagnostics.emergency_fade_down_completed,
                 sys.stderr,
             )
             _print_observation_history(
                 "emergency",
-                probe.emergency_observations,
+                diagnostics.emergency_observations,
                 sys.stderr,
             )
             print(
                 "hold_completed={0}".format(
-                    str(probe.hold_completed).lower()
+                    str(diagnostics.hold_completed).lower()
                 ),
                 file=sys.stderr,
             )
             print(
                 "fade_down_completed={0}".format(
-                    str(probe.fade_down_completed).lower()
+                    str(diagnostics.fade_down_completed).lower()
                 ),
                 file=sys.stderr,
             )
             print(
                 "interpolation_output_safe_zero={0}".format(
                     str(
-                        probe.interpolation_output_safe_zero
+                        diagnostics.interpolation_output_safe_zero
                     ).lower()
                 ),
                 file=sys.stderr,
             )
             print(
                 "routing_state_restored={0}".format(
-                    str(probe.routing_state_restored).lower()
+                    str(diagnostics.routing_state_restored).lower()
                 ),
                 file=sys.stderr,
             )
-            if probe.primary_operation_error is not None:
+            if diagnostics.primary_operation_error is not None:
                 print(
                     "primary_operation_error={0}: {1}".format(
-                        type(probe.primary_operation_error).__name__,
-                        probe.primary_operation_error,
+                        type(
+                            diagnostics.primary_operation_error
+                        ).__name__,
+                        diagnostics.primary_operation_error,
                     ),
                     file=sys.stderr,
                 )
             print(
                 "emergency_fade_down_attempted={0}".format(
                     str(
-                        probe.emergency_fade_down_attempted
+                        diagnostics.emergency_fade_down_attempted
                     ).lower()
                 ),
                 file=sys.stderr,
@@ -499,12 +486,12 @@ def main(
             print(
                 "emergency_fade_down_completed={0}".format(
                     str(
-                        probe.emergency_fade_down_completed
+                        diagnostics.emergency_fade_down_completed
                     ).lower()
                 ),
                 file=sys.stderr,
             )
-            _print_lease(probe.lease, sys.stderr)
+            _print_lease(diagnostics.lease, sys.stderr)
         print("result=failure", file=sys.stderr)
         print(
             "error_type={0}".format(type(error).__name__),
@@ -514,7 +501,11 @@ def main(
         return 1
 
     _print_snapshot("pre", result.preflight, sys.stdout)
-    print("lock_acquired=true")
+    print(
+        "lock_acquired={0}".format(
+            str(result.lock_acquired).lower()
+        )
+    )
     print("timer_address=0x{0:04x}".format(result.timer_address))
     print(
         "locked_trigger_pointer=0x{0:04x}".format(
@@ -562,7 +553,7 @@ def main(
             str(result.hold_completed).lower()
         )
     )
-    print("fall_timer_ticks={0}".format(result.timer_ticks))
+    print("fall_timer_ticks={0}".format(result.fall_timer_ticks))
     _print_interpolation_state(
         "off",
         result.off_state,
@@ -597,22 +588,38 @@ def main(
             str(result.pulse_completed).lower()
         )
     )
-    print("control_sequence_completed=true")
+    print(
+        "control_sequence_completed={0}".format(
+            str(result.control_sequence_completed).lower()
+        )
+    )
     print("physical_illumination=not_verified")
     print(
         "cleanup_completed={0}".format(
             str(result.cleanup_completed).lower()
         )
     )
-    _print_lease(probe.lease, sys.stdout)
+    print("lease_state={0}".format(result.lease_state))
+    print("release_result={0}".format(result.release_result))
+    print(
+        "lock_released={0}".format(
+            str(result.lock_released).lower()
+        )
+    )
     _print_snapshot("post", result.postflight, sys.stdout)
-    print("state_restored=true")
-    print("routing_state_restored=true")
+    print(
+        "state_restored={0}".format(
+            str(result.state_restored).lower()
+        )
+    )
+    print(
+        "routing_state_restored={0}".format(
+            str(result.routing_state_restored).lower()
+        )
+    )
     print(
         "interpolation_output_restored={0}".format(
-            str(
-                result.postflight.output == result.preflight.output
-            ).lower()
+            str(result.interpolation_output_restored).lower()
         )
     )
     print("result=success")

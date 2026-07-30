@@ -7,6 +7,7 @@ import struct
 import pytest
 
 from robot_controller import mock_server
+from robot_controller.errors import HardwareBackendUnavailableError
 from robot_controller.hardware.vsmd import (
     app_manager_mouth_led_probe as cli_module,
 )
@@ -375,10 +376,76 @@ def test_confirm_flag_absent_creates_no_transport_or_memory(capsys):
         vsmd_transport_factory=fail_factory,
         app_manager_transport_factory=fail_factory,
         memory_factory=fail_memory,
+        backend_factory=fail_factory,
     )
     assert status != 0
     assert calls == []
     assert "live_write=false" in capsys.readouterr().out
+
+
+def test_confirmed_cli_constructs_backend_and_calls_pulse_once(capsys):
+    backend_options = []
+    pulse_calls = []
+
+    class BackendSpy(object):
+        last_pulse_diagnostics = None
+
+        def pulse_mouth_led(
+            self, level, rise_ms, hold_ms, fall_ms
+        ):
+            pulse_calls.append(
+                (level, rise_ms, hold_ms, fall_ms)
+            )
+            raise HardwareBackendUnavailableError("fake backend failure")
+
+    def backend_factory(**options):
+        backend_options.append(options)
+        return BackendSpy()
+
+    status = cli_module.main(
+        [
+            "--app-manager-host", "127.0.0.2",
+            "--app-manager-port", "16495",
+            "--app-manager-timeout", "1.5",
+            "--vsmd-host", "127.0.0.3",
+            "--vsmd-port", "16498",
+            "--vsmd-connect-timeout", "1.1",
+            "--vsmd-read-timeout", "1.2",
+            "--vsmd-write-timeout", "1.3",
+            "--vsmd-max-line-length", "2048",
+            "--led-id", "14",
+            "--level", "16",
+            "--duration-ms", "200",
+            "--hold-ms", "500",
+            "--confirm-live-write",
+        ],
+        backend_factory=backend_factory,
+    )
+    captured = capsys.readouterr()
+    assert status == 1
+    assert pulse_calls == [(16, 200, 500, 200)]
+    assert len(backend_options) == 1
+    assert backend_options[0]["app_manager_host"] == "127.0.0.2"
+    assert backend_options[0]["app_manager_port"] == 16495
+    assert backend_options[0]["app_manager_timeout"] == 1.5
+    assert backend_options[0]["vsmd_host"] == "127.0.0.3"
+    assert backend_options[0]["vsmd_port"] == 16498
+    assert backend_options[0]["vsmd_connect_timeout"] == 1.1
+    assert backend_options[0]["vsmd_read_timeout"] == 1.2
+    assert backend_options[0]["vsmd_write_timeout"] == 1.3
+    assert backend_options[0]["vsmd_max_line_length"] == 2048
+    assert backend_options[0]["mouth_led_id"] == 14
+    assert "result=failure" in captured.err
+    assert "error_type=HardwareBackendUnavailableError" in captured.err
+
+
+def test_cli_has_no_direct_pulse_operation_construction_or_run_call():
+    source = inspect.getsource(cli_module)
+    assert "SotaMouthLedPulseOperation" not in source
+    assert "AppManagerLedLock" not in source
+    assert "AppManagerVsmdLedLock" not in source
+    assert "operation.run(" not in source
+    assert "backend.pulse_mouth_led(" in source
 
 
 @pytest.mark.parametrize(

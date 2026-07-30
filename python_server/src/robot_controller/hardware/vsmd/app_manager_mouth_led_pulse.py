@@ -150,6 +150,8 @@ _MouthLedPulseResultBase = collections.namedtuple(
         "fall_timer_ticks",
         "routing_state_restored",
         "lock_released",
+        "lease_state",
+        "release_result",
     ],
 )
 
@@ -178,6 +180,26 @@ class MouthLedPulseResult(_MouthLedPulseResultBase):
     def fall_observations(self):
         # type: () -> typing.Tuple[InterpolationObservation, ...]
         return self.off_snapshots
+
+    @property
+    def lock_acquired(self):
+        # type: () -> bool
+        return self.timer_address is not None
+
+    @property
+    def control_sequence_completed(self):
+        # type: () -> bool
+        return self.pulse_completed
+
+    @property
+    def state_restored(self):
+        # type: () -> bool
+        return self.routing_state_restored
+
+    @property
+    def interpolation_output_restored(self):
+        # type: () -> bool
+        return self.postflight.output == self.preflight.output
 
 
 class _SingleLeaseHandoffLock(VsmdLedLock):
@@ -531,6 +553,8 @@ class SotaMouthLedPulseOperation(object):
             self.fall_timer_ticks,
             self.routing_state_restored,
             self.lease.is_released is True,
+            self.lease.state,
+            self.lease.release_result,
         )
 
     def _read_snapshot(self):
@@ -739,4 +763,3 @@ def _validate_release_success(lease):
                 lease.release_result,
             )
         )
-

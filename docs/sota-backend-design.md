@@ -520,14 +520,36 @@ read-only observationも安定していた。operatorは物理的なmouth LEDの
 rise、hold、fade-down、消灯を確認した。preflight Outputは0だったため、
 この回帰ではnormalization writeを必要としなかった。
 
-現在のCLIはthin wrapperだが、`SotaVsmdBackend.pulse_mouth_led()`ではなく
-`SotaMouthLedPulseOperation`を直接生成している。このため今回の結果は抽出operation、
+この実機試験時点のCLIは`SotaVsmdBackend.pulse_mouth_led()`ではなく、
+`SotaMouthLedPulseOperation`を直接生成していた。このため今回の結果は抽出operation、
 AppManager lock、VSMD制御、cleanup、UNLOCKの実機証跡であり、
 `SotaVsmdBackend` wrapper自体やComposition Root integrationの証跡ではない。
 
-次のvalidation stageは、明示的Composition Root opt-in、Edison-local Python 3.6
-実行、production command integrationに加え、`SotaVsmdBackend.pulse_mouth_led()`を
-直接通す実機回帰である。
+その後、probe CLIのコード経路は次のように変更した。
+
+```text
+app_manager_mouth_led_probe
+    -> SotaVsmdBackend.pulse_mouth_led()
+    -> SotaMouthLedPulseOperation
+```
+
+Backendの生成と`mouth_led_id`設定、`level`、`rise_ms`、`hold_ms`、`fall_ms`の転送、
+成功結果と型付き失敗の表示、live確認前にBackendを生成しないことはFakeで回帰確認
+した。変更後のBackend経路では実機試験を行っていない。
+
+```text
+thin_probe_uses_sota_vsmd_backend_in_code = complete
+sota_vsmd_backend_fake_regression = complete
+thin_probe_uses_sota_vsmd_backend = pending
+sota_vsmd_backend_regression_on_hardware = pending
+composition_root_opt_in = pending
+edison_python36_direct_execution = pending
+production_command_integration = pending
+```
+
+次のvalidation stageは、`SotaVsmdBackend.pulse_mouth_led()`を直接通す人手による
+実機回帰、明示的Composition Root opt-in、Edison-local Python 3.6実行、
+production command integrationである。
 
 詳細:
 [`evidence/mouth-led-pulse-operation-regression-2026-07-30.md`](evidence/mouth-led-pulse-operation-regression-2026-07-30.md)

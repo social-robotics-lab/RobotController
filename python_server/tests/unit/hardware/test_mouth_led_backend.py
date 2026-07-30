@@ -144,6 +144,14 @@ def test_sota_backend_injects_transports_and_returns_operation_result():
     ]
 
 
+def test_sota_backend_accepts_only_verified_mouth_led_id():
+    assert SotaVsmdBackend(mouth_led_id=14).mouth_led_id == 14
+    with pytest.raises(ValueError):
+        SotaVsmdBackend(mouth_led_id=13)
+    with pytest.raises(ValueError):
+        SotaVsmdBackend(mouth_led_id=True)
+
+
 def test_sota_backend_is_not_wired_into_composition_root():
     source = inspect.getsource(mock_server)
     assert "SotaVsmdBackend" not in source

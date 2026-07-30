@@ -561,6 +561,8 @@ physical_illumination_observed = complete
 bounded_rise_hold_fall_sequence = complete
 safe_output_zero_after_probe = complete
 
+thin_probe_uses_sota_vsmd_backend_in_code = complete
+sota_vsmd_backend_fake_regression = complete
 thin_probe_uses_sota_vsmd_backend = pending
 sota_vsmd_backend_regression_on_hardware = pending
 composition_root_opt_in = pending
@@ -568,10 +570,14 @@ edison_python36_direct_execution = pending
 production_command_integration = pending
 ```
 
-現在のprobe CLIは`SotaVsmdBackend.pulse_mouth_led()`ではなく、抽出済みoperationを
-直接生成する。そのため、この試験を`SotaVsmdBackend` wrapper自体の実機回帰とは
-扱わない。Composition Rootとproduction protocolは変更されておらず、production
-Backendは引き続き未接続・Unavailableである。
+この2026-07-30実機試験時点のprobe CLIは、抽出済みoperationを直接生成していた。
+そのため、この試験を`SotaVsmdBackend` wrapper自体の実機回帰とは扱わない。
+その後、probe CLIのコード経路を`SotaVsmdBackend.pulse_mouth_led()`経由へ変更し、
+Backendの生成、引数転送、成功結果、型付き失敗、live確認前の非生成をFakeで回帰確認
+した。変更後のBackend経路では実機試験を行っていないため、
+`thin_probe_uses_sota_vsmd_backend`と`sota_vsmd_backend_regression_on_hardware`は
+pendingのままである。Composition Rootとproduction protocolは変更されておらず、
+production Backendは引き続き未接続・Unavailableである。
 
 詳細:
 [`evidence/mouth-led-pulse-operation-regression-2026-07-30.md`](evidence/mouth-led-pulse-operation-regression-2026-07-30.md)
