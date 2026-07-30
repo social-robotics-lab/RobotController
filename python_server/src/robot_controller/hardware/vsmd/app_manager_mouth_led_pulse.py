@@ -5,6 +5,7 @@ memory, AppManager locking, clocks, and controller dependencies.
 """
 
 import collections
+import math
 import time
 import typing
 
@@ -63,6 +64,8 @@ MAX_LIVE_DURATION_MS = MAX_MOUTH_LED_DURATION_MS
 MIN_LIVE_HOLD_MS = MIN_MOUTH_LED_HOLD_MS
 MAX_LIVE_HOLD_MS = MAX_MOUTH_LED_HOLD_MS
 DEFAULT_LIVE_HOLD_MS = 500
+DEFAULT_LOCK_POINTER_TIMEOUT_SECONDS = 1.0
+DEFAULT_LOCK_POINTER_POLL_INTERVAL_SECONDS = 0.01
 PULSE_LOCAL_LOCK_KEY = "app-manager-mouth-led-live-probe"
 MAX_ACTIVE_STATE_RECHECKS = 3
 MIN_ACTIVE_COMPLETION_GRACE_SECONDS = 0.05
@@ -152,6 +155,11 @@ _MouthLedPulseResultBase = collections.namedtuple(
         "lock_released",
         "lease_state",
         "release_result",
+        "lock_pointer_poll_attempt",
+        "lock_pointer_initial_value",
+        "lock_pointer_final_value",
+        "lock_pointer_wait_duration_ms",
+        "lock_pointer_converged",
     ],
 )
 
@@ -250,8 +258,12 @@ class SotaMouthLedPulseOperation(object):
         sleep_function=time.sleep,
         monotonic_function=time.monotonic,
         controller_factory=SotaMouthLedController,
+        lock_pointer_timeout_seconds=DEFAULT_LOCK_POINTER_TIMEOUT_SECONDS,
+        lock_pointer_poll_interval_seconds=(
+            DEFAULT_LOCK_POINTER_POLL_INTERVAL_SECONDS
+        ),
     ):
-        # type: (VsmdTypedMemory, AppManagerVsmdLedLock, int, int, int, typing.Optional[int], typing.Any, typing.Any, typing.Any) -> None
+        # type: (VsmdTypedMemory, AppManagerVsmdLedLock, int, int, int, typing.Optional[int], typing.Any, typing.Any, typing.Any, float, float) -> None
         if not isinstance(memory, VsmdTypedMemory):
             raise TypeError("memory must be VsmdTypedMemory")
         if not isinstance(led_lock, AppManagerVsmdLedLock):
@@ -268,6 +280,10 @@ class SotaMouthLedPulseOperation(object):
             raise TypeError("monotonic_function must be callable")
         if not callable(controller_factory):
             raise TypeError("controller_factory must be callable")
+        _validate_lock_pointer_wait_settings(
+            lock_pointer_timeout_seconds,
+            lock_pointer_poll_interval_seconds,
+        )
         self._memory = memory
         self._led_lock = led_lock
         self._level = level
@@ -277,6 +293,12 @@ class SotaMouthLedPulseOperation(object):
         self._sleep_function = sleep_function
         self._monotonic_function = monotonic_function
         self._controller_factory = controller_factory
+        self._lock_pointer_timeout_seconds = float(
+            lock_pointer_timeout_seconds
+        )
+        self._lock_pointer_poll_interval_seconds = float(
+            lock_pointer_poll_interval_seconds
+        )
         self._has_run = False
         self.preflight = None  # type: typing.Optional[MouthLedPulseSnapshot]
         self.postflight = None  # type: typing.Optional[MouthLedPulseSnapshot]
@@ -306,6 +328,11 @@ class SotaMouthLedPulseOperation(object):
         self.lease = None  # type: typing.Optional[AppManagerVsmdLedLockLease]
         self.pulse_completed = False
         self.cleanup_completed = False
+        self.lock_pointer_poll_attempt = None  # type: typing.Optional[int]
+        self.lock_pointer_initial_value = None  # type: typing.Optional[int]
+        self.lock_pointer_final_value = None  # type: typing.Optional[int]
+        self.lock_pointer_wait_duration_ms = 0.0
+        self.lock_pointer_converged = False
 
     def run(self, preflight_callback=None):
         # type: (typing.Optional[typing.Callable[[int, int], None]]) -> MouthLedPulseResult
@@ -342,16 +369,9 @@ class SotaMouthLedPulseOperation(object):
             timer_address = validate_timer_address(
                 self.lease.timer_address
             )
-            self.locked_trigger_pointer = self._memory.read_u16(
-                SOTA_MOUTH_TRIGGER_POINTER_ADDRESS
+            self.locked_trigger_pointer = (
+                self._wait_for_locked_trigger_pointer(timer_address)
             )
-            if self.locked_trigger_pointer != timer_address:
-                raise VsmdMouthLedStateError(
-                    (
-                        "locked TriggerPointer 0x{0:04x} does not match "
-                        "lease timer 0x{1:04x}"
-                    ).format(self.locked_trigger_pointer, timer_address)
-                )
         except BaseException as preparation_error:
             self._release_after_preparation_failure(preparation_error)
 
@@ -555,7 +575,63 @@ class SotaMouthLedPulseOperation(object):
             self.lease.is_released is True,
             self.lease.state,
             self.lease.release_result,
+            self.lock_pointer_poll_attempt,
+            self.lock_pointer_initial_value,
+            self.lock_pointer_final_value,
+            self.lock_pointer_wait_duration_ms,
+            self.lock_pointer_converged,
         )
+
+    def _wait_for_locked_trigger_pointer(self, timer_address):
+        # type: (int) -> int
+        """Wait only for the acquired lease pointer; never retry the lease."""
+        started_at = self._monotonic_function()
+        deadline = started_at + self._lock_pointer_timeout_seconds
+        maximum_rechecks = int(
+            math.ceil(
+                self._lock_pointer_timeout_seconds
+                / self._lock_pointer_poll_interval_seconds
+            )
+        )
+        attempt = 0
+        while True:
+            pointer = self._memory.read_u16(
+                SOTA_MOUTH_TRIGGER_POINTER_ADDRESS
+            )
+            if self.lock_pointer_initial_value is None:
+                self.lock_pointer_initial_value = pointer
+            self.lock_pointer_final_value = pointer
+            self.lock_pointer_poll_attempt = attempt
+            now = self._monotonic_function()
+            self.lock_pointer_wait_duration_ms = max(
+                0.0, (now - started_at) * 1000.0
+            )
+            if pointer == timer_address:
+                self.lock_pointer_converged = True
+                return pointer
+            if attempt >= maximum_rechecks or now >= deadline:
+                raise VsmdMouthLedStateError(
+                    (
+                        "locked TriggerPointer did not converge: "
+                        "expected=0x{0:04x}, last=0x{1:04x}, "
+                        "lease_timer=0x{2:04x}, attempts={3}, "
+                        "timeout_seconds={4}"
+                    ).format(
+                        timer_address,
+                        pointer,
+                        timer_address,
+                        attempt + 1,
+                        self._lock_pointer_timeout_seconds,
+                    )
+                )
+            remaining = deadline - now
+            self._sleep_function(
+                min(
+                    self._lock_pointer_poll_interval_seconds,
+                    remaining,
+                )
+            )
+            attempt += 1
 
     def _read_snapshot(self):
         # type: () -> MouthLedPulseSnapshot
@@ -743,6 +819,27 @@ def _combine_cleanup_errors(first_error, second_error):
     if second_error is None:
         return first_error
     return VsmdMouthLedCleanupError(first_error, second_error)
+
+
+def _validate_lock_pointer_wait_settings(timeout_seconds, poll_interval_seconds):
+    # type: (float, float) -> None
+    for name, value in (
+        ("lock_pointer_timeout_seconds", timeout_seconds),
+        ("lock_pointer_poll_interval_seconds", poll_interval_seconds),
+    ):
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+            or value <= 0
+        ):
+            raise ValueError(
+                "{0} must be finite and greater than zero".format(name)
+            )
+    if poll_interval_seconds > timeout_seconds:
+        raise ValueError(
+            "lock pointer poll interval must not exceed timeout"
+        )
 
 
 def _validate_release_success(lease):

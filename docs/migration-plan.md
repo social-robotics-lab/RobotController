@@ -648,3 +648,26 @@ production protocolは引き続き未接続である。次のgateはEdison-local
 
 詳細:
 [`evidence/mouth-led-composition-root-regression-2026-07-30.md`](evidence/mouth-led-composition-root-regression-2026-07-30.md)
+
+## Edison-local Python 3.6 smokeのpointer反映待機
+
+Edison-localでComposition Root smoke CLIを実行した際、LOCK／CONVERTは成功して
+lease timer `0x01f6`を返したが、直後のTriggerPointer readは旧値`0x01f4`だった。
+operationは制御write前に`VsmdMouthLedStateError`で停止し、物理LEDは点灯しなかった。
+
+AppManager lease取得とVSMD TriggerPointer可視化が原子的ではないため、LOCK自体を
+再試行せず、同じleaseのTriggerPointer readだけを最大1秒、10 ms間隔でbounded
+pollingする。収束前のselector、Target、pulse timer writeは禁止する。timeoutまたは
+read失敗では既存cleanupを使い、UNLOCKは最大1回とする。
+
+この失敗だけをPython 3.6非互換とは扱わず、新しい成功Evidenceもまだ作成しない。
+修正後のEdison-local実行が成功するまでgateは次のままとする。
+
+```text
+composition_root_opt_in = complete
+edison_python36_direct_execution = pending
+production_command_integration = pending
+```
+
+次のvalidation stageは、オペレータによるEdison-local Python 3.6 smokeの再実行で
+ある。

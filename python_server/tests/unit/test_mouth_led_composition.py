@@ -14,6 +14,7 @@ from robot_controller.hardware.mouth_led_backend import (
     MockMouthLedBackend,
     UnavailableMouthLedBackend,
 )
+from robot_controller.hardware.vsmd.errors import VsmdMouthLedStateError
 from robot_controller.mouth_led_composition import (
     BACKEND_MOCK,
     BACKEND_SOTA_VSMD,
@@ -254,3 +255,49 @@ def test_unavailable_smoke_confirm_preserves_typed_failure():
         "error_type=HardwareBackendUnavailableError"
         in error_output.getvalue()
     )
+
+
+def test_smoke_failure_prints_backend_lock_pointer_diagnostics():
+    class PointerDiagnostics(object):
+        lock_pointer_poll_attempt = 2
+        lock_pointer_initial_value = 0x01F4
+        lock_pointer_final_value = 0x01F4
+        lock_pointer_wait_duration_ms = 20.0
+        lock_pointer_converged = False
+
+    class FailingBackend(object):
+        last_pulse_diagnostics = PointerDiagnostics()
+
+        def pulse_mouth_led(self, **unused_arguments):
+            raise VsmdMouthLedStateError("pointer timeout")
+
+    diagnostics = MouthLedBackendDiagnostics(
+        BACKEND_SOTA_VSMD,
+        BACKEND_SOTA_VSMD,
+        True,
+        True,
+        None,
+    )
+
+    class Application(object):
+        mouth_led_backend = FailingBackend()
+        mouth_led_backend_diagnostics = diagnostics
+
+    error_output = io.StringIO()
+    status = mouth_led_backend_smoke.main(
+        ["--confirm-live-write"],
+        environ={
+            "ROBOT_MOUTH_LED_BACKEND": "sota_vsmd",
+            "ROBOT_HARDWARE_LIVE_WRITE_ENABLED": "true",
+        },
+        application_factory=lambda config: Application(),
+        output=io.StringIO(),
+        error_output=error_output,
+    )
+
+    assert status != 0
+    assert "lock_pointer_poll_attempt=2" in error_output.getvalue()
+    assert "lock_pointer_initial_value=0x01f4" in error_output.getvalue()
+    assert "lock_pointer_final_value=0x01f4" in error_output.getvalue()
+    assert "lock_pointer_converged=false" in error_output.getvalue()
+    assert "error_type=VsmdMouthLedStateError" in error_output.getvalue()

@@ -75,6 +75,7 @@ class FakeVsmdMemory(VsmdMemoryAccess):
         fall_states=None,
         emergency_states=None,
         initial_output=0,
+        lock_pointer_values=None,
     ):
         self.data = bytearray(b"\x00" * 65536)
         self.operations = []
@@ -86,6 +87,12 @@ class FakeVsmdMemory(VsmdMemoryAccess):
         self.active_state_index = 0
         self.fall_timer_count = 0
         self.pending_remaining_after = None
+        self.lock_pointer_values = (
+            None
+            if lock_pointer_values is None
+            else list(lock_pointer_values)
+        )
+        self.lock_pointer_polling_active = False
         self.normalization_states = list(
             [(0, 0, LEASE_TIMER_ADDRESS, None)]
             if normalization_states is None
@@ -151,6 +158,15 @@ class FakeVsmdMemory(VsmdMemoryAccess):
             self.pending_remaining_after = remaining_after
             if timer_value is not None:
                 self.set_u16(LEASE_TIMER_ADDRESS, timer_value)
+        elif (
+            address == SOTA_MOUTH_TRIGGER_POINTER_ADDRESS
+            and self.lock_pointer_polling_active
+            and self.lock_pointer_values
+        ):
+            self.set_u16(
+                SOTA_MOUTH_TRIGGER_POINTER_ADDRESS,
+                self.lock_pointer_values.pop(0),
+            )
         result = bytes(self.data[address:address + size])
         if (
             address == SOTA_MOUTH_OUTPUT_ADDRESS
@@ -251,6 +267,7 @@ class FakeAppManagerTransport(object):
                 )
             return self._result(self.lock_response)
         if command == INTERP_CONVERT_COMMAND:
+            self.memory.lock_pointer_polling_active = True
             return self._result(self.convert_response)
         if command == INTERP_UNLOCK_COMMAND:
             result = self._result(self.unlock_response)
@@ -307,6 +324,13 @@ def make_probe(
     sleep_function=None,
     monotonic_function=None,
     fall_ms=None,
+    lock_pointer_values=None,
+    lock_pointer_timeout_seconds=(
+        module.DEFAULT_LOCK_POINTER_TIMEOUT_SECONDS
+    ),
+    lock_pointer_poll_interval_seconds=(
+        module.DEFAULT_LOCK_POINTER_POLL_INTERVAL_SECONDS
+    ),
 ):
     raw_memory = FakeVsmdMemory(
         selector=selector,
@@ -317,6 +341,7 @@ def make_probe(
         fall_states=fall_states,
         emergency_states=emergency_states,
         initial_output=initial_output,
+        lock_pointer_values=lock_pointer_values,
     )
     app_transport = FakeAppManagerTransport(
         raw_memory,
@@ -345,6 +370,10 @@ def make_probe(
         fall_ms=fall_ms,
         sleep_function=sleep_function,
         monotonic_function=monotonic_function,
+        lock_pointer_timeout_seconds=lock_pointer_timeout_seconds,
+        lock_pointer_poll_interval_seconds=(
+            lock_pointer_poll_interval_seconds
+        ),
     )
     return probe, raw_memory, app_transport, sleeps
 
@@ -358,6 +387,19 @@ def writes(memory):
         operation for operation in memory.operations
         if operation[0] == "WRITE"
     ]
+
+
+class FakeClock(object):
+    def __init__(self):
+        self.now = 0.0
+        self.sleeps = []
+
+    def monotonic(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.sleeps.append(seconds)
+        self.now += seconds
 
 
 def test_confirm_flag_absent_creates_no_transport_or_memory(capsys):
@@ -491,6 +533,11 @@ def test_preflight_reads_all_fields_before_lock_and_normal_flow_is_ordered():
         138, 0, 0, PRE_TRIGGER_POINTER
     )
     assert result.locked_trigger_pointer == LEASE_TIMER_ADDRESS
+    assert result.lock_pointer_poll_attempt == 0
+    assert result.lock_pointer_initial_value == LEASE_TIMER_ADDRESS
+    assert result.lock_pointer_final_value == LEASE_TIMER_ADDRESS
+    assert result.lock_pointer_wait_duration_ms == 0.0
+    assert result.lock_pointer_converged is True
     assert result.master_control_period_us == 16666
     assert result.timer_ticks == 12
     assert result.level == 16
@@ -814,7 +861,7 @@ def test_fall_timer_value_is_recorded_but_not_a_success_condition():
 
 
 def test_complete_first_snapshot_is_accepted_after_deadline_elapsed():
-    times = iter([0.0, 0.0, 1.0, 1.0, 1.0, 2.0])
+    times = iter([0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 2.0])
     probe, unused_memory, unused_transport, unused_sleeps = make_probe(
         monotonic_function=lambda: next(times)
     )
@@ -1154,12 +1201,75 @@ def test_lock_or_convert_failure_performs_no_python_vsmd_write(
     assert commands(transport) == expected_commands
 
 
-def test_locked_trigger_mismatch_writes_nothing_and_unlocks_once():
+def test_locked_trigger_pointer_polls_reads_only_until_it_converges():
+    clock = FakeClock()
     probe, memory, transport, unused_sleeps = make_probe(
-        update_trigger_on_lock=False
+        update_trigger_on_lock=False,
+        lock_pointer_values=[
+            PRE_TRIGGER_POINTER,
+            PRE_TRIGGER_POINTER,
+            LEASE_TIMER_ADDRESS,
+        ],
+        sleep_function=clock.sleep,
+        monotonic_function=clock.monotonic,
     )
-    with pytest.raises(VsmdMouthLedStateError, match="TriggerPointer"):
+    result = probe.run()
+    first_write = memory.operations.index(writes(memory)[0])
+    assert memory.operations[:first_write].count(
+        ("READ", SOTA_MOUTH_TRIGGER_POINTER_ADDRESS, 2)
+    ) == 4
+    assert result.lock_pointer_poll_attempt == 2
+    assert result.lock_pointer_initial_value == PRE_TRIGGER_POINTER
+    assert result.lock_pointer_final_value == LEASE_TIMER_ADDRESS
+    assert result.lock_pointer_wait_duration_ms == pytest.approx(20.0)
+    assert result.lock_pointer_converged is True
+    assert clock.sleeps[:2] == [0.01, 0.01]
+    assert commands(transport).count(INTERP_LOCK_COMMAND) == 1
+    assert commands(transport).count(INTERP_CONVERT_COMMAND) == 1
+    assert commands(transport).count(INTERP_UNLOCK_COMMAND) == 1
+
+
+def test_locked_trigger_pointer_may_converge_on_final_allowed_read():
+    clock = FakeClock()
+    probe, unused_memory, transport, unused_sleeps = make_probe(
+        update_trigger_on_lock=False,
+        lock_pointer_values=[
+            PRE_TRIGGER_POINTER,
+            PRE_TRIGGER_POINTER,
+            LEASE_TIMER_ADDRESS,
+        ],
+        sleep_function=clock.sleep,
+        monotonic_function=clock.monotonic,
+        lock_pointer_timeout_seconds=0.02,
+        lock_pointer_poll_interval_seconds=0.01,
+    )
+    result = probe.run()
+    assert result.lock_pointer_poll_attempt == 2
+    assert result.lock_pointer_converged is True
+    assert commands(transport).count(INTERP_LOCK_COMMAND) == 1
+    assert commands(transport).count(INTERP_CONVERT_COMMAND) == 1
+    assert commands(transport).count(INTERP_UNLOCK_COMMAND) == 1
+
+
+def test_locked_trigger_pointer_timeout_writes_nothing_and_unlocks_once():
+    clock = FakeClock()
+    probe, memory, transport, unused_sleeps = make_probe(
+        update_trigger_on_lock=False,
+        lock_pointer_values=[PRE_TRIGGER_POINTER] * 3,
+        sleep_function=clock.sleep,
+        monotonic_function=clock.monotonic,
+        lock_pointer_timeout_seconds=0.02,
+        lock_pointer_poll_interval_seconds=0.01,
+    )
+    with pytest.raises(VsmdMouthLedStateError) as caught:
         probe.run()
+    assert "expected=0x01f6" in str(caught.value)
+    assert "last=0x01f4" in str(caught.value)
+    assert "lease_timer=0x01f6" in str(caught.value)
+    assert "attempts=3" in str(caught.value)
+    assert "timeout_seconds=0.02" in str(caught.value)
+    assert probe.lock_pointer_poll_attempt == 2
+    assert probe.lock_pointer_converged is False
     assert writes(memory) == []
     assert commands(transport) == [
         INTERP_LOCK_COMMAND,
@@ -1168,9 +1278,18 @@ def test_locked_trigger_mismatch_writes_nothing_and_unlocks_once():
     ]
 
 
-def test_locked_trigger_read_failure_unlocks_once_without_write():
-    probe, memory, transport, unused_sleeps = make_probe()
-    memory.fail_read_number = 6
+def test_locked_trigger_poll_read_failure_unlocks_once_without_write():
+    clock = FakeClock()
+    probe, memory, transport, unused_sleeps = make_probe(
+        update_trigger_on_lock=False,
+        lock_pointer_values=[
+            PRE_TRIGGER_POINTER,
+            LEASE_TIMER_ADDRESS,
+        ],
+        sleep_function=clock.sleep,
+        monotonic_function=clock.monotonic,
+    )
+    memory.fail_read_number = 7
     with pytest.raises(RuntimeError, match="read"):
         probe.run()
     assert writes(memory) == []
@@ -1179,6 +1298,53 @@ def test_locked_trigger_read_failure_unlocks_once_without_write():
         INTERP_CONVERT_COMMAND,
         INTERP_UNLOCK_COMMAND,
     ]
+
+
+def test_locked_trigger_timeout_and_unlock_failure_preserve_both_errors():
+    clock = FakeClock()
+    probe, memory, transport, unused_sleeps = make_probe(
+        update_trigger_on_lock=False,
+        lock_pointer_values=[PRE_TRIGGER_POINTER] * 3,
+        unlock_response=SERIALIZED_NG,
+        sleep_function=clock.sleep,
+        monotonic_function=clock.monotonic,
+        lock_pointer_timeout_seconds=0.02,
+        lock_pointer_poll_interval_seconds=0.01,
+    )
+    with pytest.raises(VsmdMouthLedCleanupError) as caught:
+        probe.run()
+    assert isinstance(caught.value.operation_error, VsmdMouthLedStateError)
+    assert isinstance(caught.value.cleanup_error, AppManagerUnlockError)
+    assert writes(memory) == []
+    assert commands(transport).count(INTERP_LOCK_COMMAND) == 1
+    assert commands(transport).count(INTERP_CONVERT_COMMAND) == 1
+    assert commands(transport).count(INTERP_UNLOCK_COMMAND) == 1
+
+
+@pytest.mark.parametrize(
+    "timeout_seconds,poll_interval_seconds",
+    [
+        (0, 0.01),
+        (-1, 0.01),
+        (float("nan"), 0.01),
+        (float("inf"), 0.01),
+        (True, 0.01),
+        (1.0, 0),
+        (1.0, -1),
+        (1.0, float("nan")),
+        (1.0, float("inf")),
+        (1.0, True),
+        (0.01, 0.02),
+    ],
+)
+def test_lock_pointer_wait_settings_are_strictly_validated(
+    timeout_seconds, poll_interval_seconds
+):
+    with pytest.raises(ValueError):
+        make_probe(
+            lock_pointer_timeout_seconds=timeout_seconds,
+            lock_pointer_poll_interval_seconds=poll_interval_seconds,
+        )
 
 
 def test_vsmd_write_failure_attempts_exactly_one_unlock():
@@ -1370,6 +1536,11 @@ def test_confirmed_cli_uses_supplied_endpoints_and_reports_success(capsys):
     assert "result=success" in output
     assert "lease_state=released" in output
     assert "release_result=OK" in output
+    assert "lock_pointer_poll_attempt=0" in output
+    assert "lock_pointer_initial_value=0x01f6" in output
+    assert "lock_pointer_final_value=0x01f6" in output
+    assert "lock_pointer_wait_duration_ms=" in output
+    assert "lock_pointer_converged=true" in output
     assert "transition_duration_ms=200" in output
     assert "hold_duration_ms=500" in output
     assert "normalization_required=false" in output

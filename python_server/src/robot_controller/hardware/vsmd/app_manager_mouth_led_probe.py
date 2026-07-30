@@ -194,6 +194,39 @@ def _print_lease(lease, output):
     )
 
 
+def _print_lock_pointer_diagnostics(value, output):
+    # type: (typing.Any, typing.Any) -> None
+    attempt = getattr(value, "lock_pointer_poll_attempt", None)
+    initial = getattr(value, "lock_pointer_initial_value", None)
+    final = getattr(value, "lock_pointer_final_value", None)
+    duration = getattr(value, "lock_pointer_wait_duration_ms", None)
+    converged = getattr(value, "lock_pointer_converged", None)
+    if attempt is not None:
+        print("lock_pointer_poll_attempt={0}".format(attempt), file=output)
+    if initial is not None:
+        print(
+            "lock_pointer_initial_value=0x{0:04x}".format(initial),
+            file=output,
+        )
+    if final is not None:
+        print(
+            "lock_pointer_final_value=0x{0:04x}".format(final),
+            file=output,
+        )
+    if duration is not None:
+        print(
+            "lock_pointer_wait_duration_ms={0:.3f}".format(duration),
+            file=output,
+        )
+    if converged is not None:
+        print(
+            "lock_pointer_converged={0}".format(
+                str(converged).lower()
+            ),
+            file=output,
+        )
+
+
 def _print_interpolation_state(prefix, state, reached_target, output):
     # type: (str, typing.Optional[InterpolationObservation], bool, typing.Any) -> None
     if state is None:
@@ -380,6 +413,7 @@ def main(
                     ),
                     file=sys.stderr,
                 )
+            _print_lock_pointer_diagnostics(diagnostics, sys.stderr)
             print(
                 "normalization_required={0}".format(
                     str(diagnostics.normalization_required).lower()
@@ -512,6 +546,7 @@ def main(
             result.locked_trigger_pointer
         )
     )
+    _print_lock_pointer_diagnostics(result, sys.stdout)
     print(
         "normalization_required={0}".format(
             str(result.normalization_required).lower()

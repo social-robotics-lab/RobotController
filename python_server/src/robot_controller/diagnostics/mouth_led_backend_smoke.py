@@ -119,6 +119,30 @@ def _print_diagnostics(diagnostics, output):
         )
 
 
+def _print_lock_pointer_diagnostics(value, output):
+    # type: (typing.Any, typing.Any) -> None
+    for name in (
+        "lock_pointer_poll_attempt",
+        "lock_pointer_wait_duration_ms",
+        "lock_pointer_converged",
+    ):
+        field_value = getattr(value, name, None)
+        if field_value is not None:
+            if isinstance(field_value, bool):
+                field_value = str(field_value).lower()
+            print("{0}={1}".format(name, field_value), file=output)
+    for name in (
+        "lock_pointer_initial_value",
+        "lock_pointer_final_value",
+    ):
+        field_value = getattr(value, name, None)
+        if field_value is not None:
+            print(
+                "{0}=0x{1:04x}".format(name, field_value),
+                file=output,
+            )
+
+
 def main(
     argv=None,
     environ=None,
@@ -133,6 +157,7 @@ def main(
     if error_output is None:
         error_output = sys.stderr
     arguments = build_argument_parser().parse_args(argv)
+    application = None
     try:
         settings = load_mouth_led_backend_settings(environ)
         application = application_factory(
@@ -156,6 +181,7 @@ def main(
             hold_ms=arguments.hold_ms,
             fall_ms=arguments.fall_ms,
         )
+        _print_lock_pointer_diagnostics(result, output)
         print(
             "pulse_completed={0}".format(
                 str(result.pulse_completed).lower()
@@ -165,6 +191,16 @@ def main(
         print("result=success", file=output)
         return 0
     except Exception as error:
+        if application is not None:
+            diagnostics = getattr(
+                application.mouth_led_backend,
+                "last_pulse_diagnostics",
+                None,
+            )
+            if diagnostics is not None:
+                _print_lock_pointer_diagnostics(
+                    diagnostics, error_output
+                )
         print("result=failure", file=error_output)
         print(
             "error_type={0}".format(type(error).__name__),

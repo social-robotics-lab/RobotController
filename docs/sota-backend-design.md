@@ -624,3 +624,53 @@ handlerは引き続き未接続である。次のgateはEdison-local CPython 3.6
 
 詳細:
 [`evidence/mouth-led-composition-root-regression-2026-07-30.md`](evidence/mouth-led-composition-root-regression-2026-07-30.md)
+
+## 15. Edison-local実行で判明したlease pointer反映遅延
+
+Edison上のPython 3.6からComposition Root smoke CLIを直接実行したところ、
+AppManagerのLOCKとCONVERTは成功し、lease timer `0x01f6`を返したが、直後の
+TriggerPointer readはLOCK前の`0x01f4`を返した。operationは
+`VsmdMouthLedStateError`で中止され、物理LEDは点灯しなかった。
+
+原因はLOCKの失敗ではなく、AppManager応答とVSMD TriggerPointer更新の可視化が
+原子的ではないことである。ローカルreadはSSH転送経由より速いため、一時的な旧値を
+観測できる。
+
+operationは取得済みlease timer addressを期待値とし、既存の注入済み
+`monotonic_function`と`sleep_function`を使ってTriggerPointer readだけを待つ。
+
+```text
+lock pointer timeout = 1.0 second
+lock pointer poll interval = 0.01 second
+```
+
+timeoutとintervalは有限かつ正で、intervalはtimeout以下とする。boolは数値として
+受理しない。公開`MouthLedBackend.pulse_mouth_led()` APIとCLI引数には露出しない。
+
+pollingはLOCK／CONVERT成功とlease timer取得の後、selector、Target、timer、
+normalization、riseの各writeより前に行う。期待値へ収束するまでmouth LED制御writeは
+0回である。LOCK、CONVERT、lease取得、socket、pulse全体を再試行しない。
+
+timeout errorにはexpected pointer、last observed pointer、lease timer、attempt数、
+timeoutを含める。timeoutまたはpolling read失敗でも既存cleanupで同一leaseを
+最大1回UNLOCKする。UNLOCKも失敗した場合は`VsmdMouthLedCleanupError`にprimary
+pointer errorとcleanup errorの双方を保持する。
+
+成功結果および利用可能な内部診断には次を保持する。
+
+```text
+lock_pointer_poll_attempt
+lock_pointer_initial_value
+lock_pointer_final_value
+lock_pointer_wait_duration_ms
+lock_pointer_converged
+```
+
+既存のoperation、Backend、Composition Root、production isolation gateは変更しない。
+Edison-local修正後の成功確認は未実施である。
+
+```text
+composition_root_opt_in = complete
+edison_python36_direct_execution = pending
+production_command_integration = pending
+```

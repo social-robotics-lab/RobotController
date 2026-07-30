@@ -835,3 +835,28 @@ CLIはoperationを直接生成するため、この結果は`SotaVsmdBackend` wr
 実機証跡ではない。詳細は
 [`evidence/mouth-led-pulse-operation-regression-2026-07-30.md`](evidence/mouth-led-pulse-operation-regression-2026-07-30.md)
 を参照する。
+## AppManager lease取得後のTriggerPointer可視化遅延
+
+Edison-local Python 3.6からComposition Root smoke CLIを実行した際、
+`INTERP_LOCK`と`INTERP_CNV_KEY_2_ADDR`は成功し、lease timer addressとして
+`0x01f6`を取得したが、直後のVSMD TriggerPointer readはLOCK前の`0x01f4`を返した。
+この時点でpulseは`VsmdMouthLedStateError`により安全に中止され、物理LEDは点灯
+しなかった。
+
+この観測から、AppManagerのLOCK／CONVERT成功応答と、`vsmd_edison`側
+TriggerPointer更新のread可視化は原子的ではないことが分かった。Edison-local実行は
+SSH転送経由よりreadが速いため、この短い反映遅延を観測しやすい。
+
+wire format、command、response、timer address計算に新しい変更はない。LOCK、
+CONVERT、UNLOCKを再送せず、取得済みleaseに対するTriggerPointer readだけを
+bounded pollingする。
+
+```text
+expected pointer: lease timer address
+timeout: 1.0 second
+poll interval: 0.01 second
+```
+
+期待pointerへ収束するまでselector、Target、rise/fade-down timerなどのmouth LED
+制御writeは行わない。timeoutまたはread失敗時は既存のtyped errorとcleanup経路を
+使用し、UNLOCKは最大1回である。
