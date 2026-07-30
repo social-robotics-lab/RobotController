@@ -152,6 +152,6 @@ SHA-256 values can be added after the user supplies them.
 
 | Evidence file | SHA-256 |
 | --- | --- |
-| `mouth_led_normalized_pulse_result.txt` | `TODO: user-supplied SHA-256` |
-| `mouth_led_normalized_pulse.pcap` | `TODO: user-supplied SHA-256` |
-| `mouth_led_normalized_pulse_ascii.txt` | `TODO: user-supplied SHA-256` |
+| `mouth_led_normalized_pulse_result.txt` | `5D0882D07B0D20E3905E12B94E405C3A3971F19115F229B641E9C74968FF989F` |
+| `mouth_led_normalized_pulse.pcap` | `6277925FB0E406A67E1ECB6361D919D319D001FFA23B62992863ACF3A3ED5457` |
+| `mouth_led_normalized_pulse_ascii.txt` | `9A40EBC0351BE10D80463348D196FF369958E6C2EE0261C2DA8F1234AE7BBCE8` |
