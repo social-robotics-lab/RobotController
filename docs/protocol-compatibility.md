@@ -828,3 +828,10 @@ LED ID 14、VSMD address、AppManager lock key、変換後timer addressは内部
 
 この抽出はRobotController legacy protocol v1のwire形式、応答有無、コマンド効果を
 変更しない。Composition Rootは未接続で、既定BackendはUnavailableのままである。
+
+抽出済みmouth LED operationは2026-07-30に物理Sota上で回帰確認され、rise、
+hold、fade-down、Output 0、routing復元、UNLOCK、物理発光が成功した。現在のprobe
+CLIはoperationを直接生成するため、この結果は`SotaVsmdBackend` wrapper自体の
+実機証跡ではない。詳細は
+[`evidence/mouth-led-pulse-operation-regression-2026-07-30.md`](evidence/mouth-led-pulse-operation-regression-2026-07-30.md)
+を参照する。

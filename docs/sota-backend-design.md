@@ -496,3 +496,38 @@ lock、VSMD write、UNLOCKの自動retryは行わず、bounded observationだけ
 
 Composition Rootには接続していない。既定production Backendは引き続き
 Unavailableであり、診断CLIの明示フラグなしにlive write経路は開かれない。
+
+## 13. 2026-07-30 抽出operationの実機回帰
+
+抽出後の`SotaMouthLedPulseOperation`を既存の明示実行専用probe CLIから呼び出し、
+物理Sota上で回帰確認した。MasterCtrlPeriodは`16667 us`、rise/fallはそれぞれ
+11 ticks、割当timer addressは`0x01f6`だった。
+
+```text
+rise_reached_target=true
+hold_completed=true
+fade_down_completed=true
+interpolation_output_safe_zero=true
+routing_state_restored=true
+lock_released=true
+pulse_completed=true
+result=success
+```
+
+riseはOutput 16へ到達し、hold後のfade-downでOutput 0へ戻った。cleanup後は
+selector `0x008a`、target 0、output 0、TriggerPointer `0x01f4`となり、試験後の
+read-only observationも安定していた。operatorは物理的なmouth LEDの
+rise、hold、fade-down、消灯を確認した。preflight Outputは0だったため、
+この回帰ではnormalization writeを必要としなかった。
+
+現在のCLIはthin wrapperだが、`SotaVsmdBackend.pulse_mouth_led()`ではなく
+`SotaMouthLedPulseOperation`を直接生成している。このため今回の結果は抽出operation、
+AppManager lock、VSMD制御、cleanup、UNLOCKの実機証跡であり、
+`SotaVsmdBackend` wrapper自体やComposition Root integrationの証跡ではない。
+
+次のvalidation stageは、明示的Composition Root opt-in、Edison-local Python 3.6
+実行、production command integrationに加え、`SotaVsmdBackend.pulse_mouth_led()`を
+直接通す実機回帰である。
+
+詳細:
+[`evidence/mouth-led-pulse-operation-regression-2026-07-30.md`](evidence/mouth-led-pulse-operation-regression-2026-07-30.md)

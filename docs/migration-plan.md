@@ -542,3 +542,36 @@ M11: Operational release
 Composition Rootへの接続はこの変更の対象外とし、既定BackendはUnavailableの
 まま維持する。次のgateは人間が内容を確認した上で行うEdison Python 3.6実行と、
 別途設計する明示的opt-in統合である。
+
+## 2026-07-30 mouth LED抽出後の実機回帰
+
+診断CLIから抽出した`SotaMouthLedPulseOperation`を、既存の明示実行専用probe
+CLI経由で実機Sotaに対して回帰確認した。level 16、rise 200 ms、hold 500 ms、
+fall 200 msで物理発光を確認し、rise、hold、fade-down、Output 0への復帰、
+selector `0x008a`への復元、TriggerPointer `0x01f4`への復元、単一UNLOCKが
+すべて成功した。試験後のread-only observationも3 sampleで安定していた。
+
+今回のpreflight Outputは0であり、事前normalizationは不要だった。
+
+```text
+validated_operation_extracted_from_probe = complete
+thin_probe_uses_extracted_operation = complete
+pulse_operation_regression_on_hardware = complete
+physical_illumination_observed = complete
+bounded_rise_hold_fall_sequence = complete
+safe_output_zero_after_probe = complete
+
+thin_probe_uses_sota_vsmd_backend = pending
+sota_vsmd_backend_regression_on_hardware = pending
+composition_root_opt_in = pending
+edison_python36_direct_execution = pending
+production_command_integration = pending
+```
+
+現在のprobe CLIは`SotaVsmdBackend.pulse_mouth_led()`ではなく、抽出済みoperationを
+直接生成する。そのため、この試験を`SotaVsmdBackend` wrapper自体の実機回帰とは
+扱わない。Composition Rootとproduction protocolは変更されておらず、production
+Backendは引き続き未接続・Unavailableである。
+
+詳細:
+[`evidence/mouth-led-pulse-operation-regression-2026-07-30.md`](evidence/mouth-led-pulse-operation-regression-2026-07-30.md)
