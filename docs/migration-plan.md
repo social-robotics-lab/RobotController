@@ -712,17 +712,46 @@ but does not create a socket. The normal Backend default remains
 Unavailable, the Sota double opt-in names are unchanged, and server startup
 does not pulse, connect, lock, read, write, or sleep.
 
-Current gates:
+The implementation and Fake gates were completed first. A manually initiated
+Edison production-command test then confirmed one physical pulse at level 16
+with 200 ms rise, 1000 ms hold, and 200 ms fall. The command was sent once
+through `127.0.0.1:22222`; the response reported success,
+`pulse_completed=true`, and `lock_pointer_converged=true`.
+
+Packet capture confirmed one LOCK, one CONVERT, and one UNLOCK using the same
+key. The interpolation output reached 16. Post-test observation confirmed
+Output 0, selector `0x008a`, TriggerPointer `0x01f4`, RemainingTime 0, and
+safe cleanup. The operator confirmed physical turn-off.
+
+Current mouth LED gates:
 
 ```text
 production_command_integration_in_code = complete
 production_command_fake_regression = complete
-production_command_integration = pending
+production_command_register_regression = complete
+production_command_physical_confirmation = complete
+production_command_integration = complete
+phase7_mouth_led_golden_path = complete
 
 edison_python36_direct_execution = complete
 composition_root_opt_in = complete
 sota_vsmd_backend_regression_on_hardware = complete
 ```
 
-`production_command_integration` remains pending until a human performs and
-documents the production TCP command test on hardware.
+Remaining Phase 7 and full-target gates:
+
+```text
+phase7_fault_recovery = pending
+full_sota_command_target_integration = pending
+```
+
+This completes the Python production LED write, the transition from the
+Unavailable lock path to the production candidate for the mouth LED Backend,
+Composition Root integration for that Backend, the production v2 mouth LED
+command, physical confirmation, cleanup, Output-zero restoration, and the
+single UNLOCK. It does not complete lock contention, non-LIFO release,
+abnormal-process recovery, full `VsmdSotaCommandTarget` Composition Root
+integration, or Sota single-axis servo control.
+
+Detailed production-command evidence:
+[`evidence/mouth-led-production-command-visual-confirmation-2026-07-30.md`](evidence/mouth-led-production-command-visual-confirmation-2026-07-30.md)

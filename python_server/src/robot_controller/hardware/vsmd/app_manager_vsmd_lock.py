@@ -92,8 +92,10 @@ class AppManagerVsmdLedLock(VsmdLedLock):
     """Adapt lease-based AppManager locking to ``VsmdLedLock``.
 
     This object prevents overlapping IDs only among leases created by this
-    adapter instance. It is not a cross-process mutex and is not installed in
-    the production Composition Root.
+    adapter instance; it is not itself a cross-process mutex. AppManager
+    performs the actual inter-process lock arbitration. The production mouth
+    LED Backend uses this adapter, but that does not imply completion of full
+    Sota command-target integration.
     """
 
     def __init__(self, app_manager_lock):

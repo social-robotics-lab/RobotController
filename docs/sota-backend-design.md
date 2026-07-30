@@ -725,15 +725,40 @@ failures are preserved as causes and translated to the sanitized
 `MOUTH_LED_OPERATION_FAILED` response. Unexpected failures become
 `INTERNAL_ERROR`.
 
-The code and Fake regression gates are complete; physical validation of this
-new TCP route remains pending:
+The code and Fake regression gates were completed before the hardware run.
+The production v2 route was then confirmed on the Edison with one
+`v2/mouth_led_pulse` request. The physical LED illuminated and turned off,
+the response reported success, Output returned to zero, selector and
+TriggerPointer were restored, and a single LOCK/CONVERT/UNLOCK sequence
+completed with the same key.
 
 ```text
 production_command_integration_in_code = complete
 production_command_fake_regression = complete
-production_command_integration = pending
+production_command_register_regression = complete
+production_command_physical_confirmation = complete
+production_command_integration = complete
+phase7_mouth_led_golden_path = complete
 
 edison_python36_direct_execution = complete
 composition_root_opt_in = complete
 sota_vsmd_backend_regression_on_hardware = complete
 ```
+
+The double opt-in and fail-closed default are unchanged. Normal startup still
+resolves to `UnavailableMouthLedBackend` unless both explicit Sota settings
+are present. The successful production test does not make live writes the
+default.
+
+This result completes only the production mouth LED command path. The full
+legacy-v1-facing `VsmdSotaCommandTarget` is not integrated into the
+Composition Root. The next design gate covers lock contention, non-LIFO
+release, and abnormal-process recovery:
+
+```text
+phase7_fault_recovery = pending
+full_sota_command_target_integration = pending
+```
+
+Detailed production-command evidence:
+[`evidence/mouth-led-production-command-visual-confirmation-2026-07-30.md`](evidence/mouth-led-production-command-visual-confirmation-2026-07-30.md)
