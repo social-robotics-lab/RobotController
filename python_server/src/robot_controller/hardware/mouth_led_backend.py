@@ -181,11 +181,20 @@ class MockMouthLedBackend(MouthLedBackend):
 
 
 class UnavailableMouthLedBackend(MouthLedBackend):
-    """Fail closed while the production Composition Root remains unwired."""
+    """Fail closed with a non-secret diagnostic reason."""
+
+    def __init__(self, reason="mouth LED hardware backend is unavailable"):
+        # type: (str) -> None
+        if not isinstance(reason, str) or not reason:
+            raise TypeError("reason must be a non-empty string")
+        self._reason = reason
+
+    @property
+    def reason(self):
+        # type: () -> str
+        return self._reason
 
     def pulse_mouth_led(self, level, rise_ms, hold_ms, fall_ms):
         # type: (int, int, int, int) -> typing.NoReturn
         validate_mouth_led_pulse(level, rise_ms, hold_ms, fall_ms)
-        raise HardwareBackendUnavailableError(
-            "mouth LED hardware backend is unavailable"
-        )
+        raise HardwareBackendUnavailableError(self._reason)

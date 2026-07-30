@@ -4,6 +4,7 @@ import argparse
 import collections
 import logging
 import math
+import os
 import signal
 import sys
 import threading
@@ -16,6 +17,12 @@ from robot_controller.command_target import (
 )
 from robot_controller.motion_scheduler import MotionSchedulingCommandTarget
 from robot_controller.models import IdleMotionSettings, Motion, Pose
+from robot_controller.hardware.mouth_led_backend import MouthLedBackend
+from robot_controller.mouth_led_composition import (
+    MouthLedBackendSettings,
+    load_mouth_led_backend_settings,
+    resolve_mouth_led_backend,
+)
 from robot_controller.profiles import (
     RobotProfile,
     create_mock_robot_profile,
@@ -58,6 +65,7 @@ _MockApplicationConfigBase = collections.namedtuple(
         "client_timeout_seconds",
         "profile",
         "wav_timeout_seconds",
+        "mouth_led_settings",
     ],
 )
 
@@ -76,8 +84,9 @@ class MockApplicationConfig(_MockApplicationConfigBase):
         client_timeout_seconds=DEFAULT_CLIENT_TIMEOUT_SECONDS,
         profile=DEFAULT_MOCK_PROFILE,
         wav_timeout_seconds=DEFAULT_TIMEOUTS.wav_payload_timeout,
+        mouth_led_settings=None,
     ):
-        # type: (str, int, int, int, float, str, float) -> MockApplicationConfig
+        # type: (str, int, int, int, float, str, float, typing.Optional[MouthLedBackendSettings]) -> MockApplicationConfig
         if profile not in SUPPORTED_MOCK_PROFILES:
             raise ValueError(
                 "unsupported Mock profile: {0}".format(profile)
@@ -96,6 +105,12 @@ class MockApplicationConfig(_MockApplicationConfigBase):
             client_timeout_seconds=client_timeout_seconds,
             session_timeouts=session_timeouts,
         )
+        if mouth_led_settings is None:
+            mouth_led_settings = MouthLedBackendSettings()
+        if not isinstance(mouth_led_settings, MouthLedBackendSettings):
+            raise TypeError(
+                "mouth_led_settings must be MouthLedBackendSettings"
+            )
         return _MockApplicationConfigBase.__new__(
             cls,
             validated_server_config.host,
@@ -105,6 +120,7 @@ class MockApplicationConfig(_MockApplicationConfigBase):
             validated_server_config.client_timeout_seconds,
             profile,
             session_timeouts.wav_payload_timeout,
+            mouth_led_settings,
         )
 
 
@@ -265,8 +281,18 @@ class MockApplication(object):
         server,
         scheduler=None,
         command_target=None,
+        mouth_led_backend=None,
+        mouth_led_backend_diagnostics=None,
     ):
-        # type: (MockApplicationConfig, RobotProfile, RecordingCommandTarget, SerializedRobotCommandTarget, CommandRouter, LegacyV1TcpServer, typing.Optional[MotionSchedulingCommandTarget], typing.Optional[RobotCommandTarget]) -> None
+        # type: (MockApplicationConfig, RobotProfile, RecordingCommandTarget, SerializedRobotCommandTarget, CommandRouter, LegacyV1TcpServer, typing.Optional[MotionSchedulingCommandTarget], typing.Optional[RobotCommandTarget], typing.Optional[MouthLedBackend], typing.Any) -> None
+        if mouth_led_backend is None:
+            default_resolution = resolve_mouth_led_backend(
+                MouthLedBackendSettings()
+            )
+            mouth_led_backend = default_resolution.backend
+            mouth_led_backend_diagnostics = (
+                default_resolution.diagnostics
+            )
         self._config = config
         self._profile = profile
         self._target = target
@@ -275,6 +301,8 @@ class MockApplication(object):
         self._command_target = command_target
         self._router = router
         self._server = server
+        self._mouth_led_backend = mouth_led_backend
+        self._mouth_led_backend_diagnostics = mouth_led_backend_diagnostics
         self._shutdown_lock = threading.Lock()
 
     @property
@@ -317,6 +345,18 @@ class MockApplication(object):
         # type: () -> LegacyV1TcpServer
         return self._server
 
+    @property
+    def mouth_led_backend(self):
+        # type: () -> MouthLedBackend
+        """Return the configured backend without exposing it to v1 routing."""
+        return self._mouth_led_backend
+
+    @property
+    def mouth_led_backend_diagnostics(self):
+        # type: () -> typing.Any
+        """Return the non-secret backend resolution diagnostics."""
+        return self._mouth_led_backend_diagnostics
+
     def run(self):
         # type: () -> None
         """Start the command worker before serving TCP in this thread."""
@@ -348,11 +388,14 @@ class MockApplication(object):
             self._service.shutdown()
 
 
-def create_mock_application(config):
-    # type: (MockApplicationConfig) -> MockApplication
+def create_mock_application(config, mouth_led_backend_resolver=None):
+    # type: (MockApplicationConfig, typing.Any) -> MockApplication
     """Build Profile, Target, serialized service, Router, then TCP Server."""
     if not isinstance(config, MockApplicationConfig):
         raise TypeError("config must be MockApplicationConfig")
+    if mouth_led_backend_resolver is None:
+        mouth_led_backend_resolver = resolve_mouth_led_backend
+    resolution = mouth_led_backend_resolver(config.mouth_led_settings)
 
     profile = create_mock_robot_profile()
     initial_axes = dict(
@@ -409,6 +452,8 @@ def create_mock_application(config):
         server,
         scheduler=scheduler,
         command_target=command_target,
+        mouth_led_backend=resolution.backend,
+        mouth_led_backend_diagnostics=resolution.diagnostics,
     )
 
 
@@ -565,6 +610,7 @@ def main(argv=None):
             client_timeout_seconds=arguments.client_timeout,
             profile=arguments.profile,
             wav_timeout_seconds=arguments.wav_timeout,
+            mouth_led_settings=load_mouth_led_backend_settings(os.environ),
         )
         application = create_mock_application(config)
         previous_handlers = _install_signal_handlers(stop_requested)

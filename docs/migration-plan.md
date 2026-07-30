@@ -563,8 +563,8 @@ safe_output_zero_after_probe = complete
 
 thin_probe_uses_sota_vsmd_backend_in_code = complete
 sota_vsmd_backend_fake_regression = complete
-thin_probe_uses_sota_vsmd_backend = pending
-sota_vsmd_backend_regression_on_hardware = pending
+thin_probe_uses_sota_vsmd_backend = complete
+sota_vsmd_backend_regression_on_hardware = complete
 composition_root_opt_in = pending
 edison_python36_direct_execution = pending
 production_command_integration = pending
@@ -574,10 +574,68 @@ production_command_integration = pending
 そのため、この試験を`SotaVsmdBackend` wrapper自体の実機回帰とは扱わない。
 その後、probe CLIのコード経路を`SotaVsmdBackend.pulse_mouth_led()`経由へ変更し、
 Backendの生成、引数転送、成功結果、型付き失敗、live確認前の非生成をFakeで回帰確認
-した。変更後のBackend経路では実機試験を行っていないため、
-`thin_probe_uses_sota_vsmd_backend`と`sota_vsmd_backend_regression_on_hardware`は
-pendingのままである。Composition Rootとproduction protocolは変更されておらず、
-production Backendは引き続き未接続・Unavailableである。
+した。その後、変更後のBackend経路も実機回帰し、
+`thin_probe_uses_sota_vsmd_backend`と`sota_vsmd_backend_regression_on_hardware`を
+completeとした。production protocolへの接続は行っていない。
 
 詳細:
 [`evidence/mouth-led-pulse-operation-regression-2026-07-30.md`](evidence/mouth-led-pulse-operation-regression-2026-07-30.md)
+
+## mouth LED BackendのComposition Root明示opt-in
+
+既存の`MockApplicationConfig`、`create_mock_application()`、
+`MockApplication`を通常の設定・Composition Root・Application Container経路として
+拡張した。既定は`UnavailableMouthLedBackend`であり、Sota VSMD Backendの選択には
+次の二重opt-inが必要である。
+
+```text
+ROBOT_MOUTH_LED_BACKEND=sota_vsmd
+ROBOT_HARDWARE_LIVE_WRITE_ENABLED=true
+```
+
+backend kindは`unavailable`、`mock`、`sota_vsmd`だけを許可する。live write booleanは
+`true`と`false`だけを許可し、曖昧な値をconfiguration errorとして拒否する。
+`sota_vsmd`を要求してもlive writeが無効なら、設定ミスを隠さないreasonを持つ
+Unavailableへfail-closedする。
+
+Sota endpoint設定には次を使用する。値を省略した場合は、既存transportの安全な
+明示default（loopback、AppManager 6495、VSMD 6498、既存timeoutとline length、
+検証済みmouth LED ID 14）を使用する。
+
+```text
+ROBOT_SOTA_APP_MANAGER_HOST
+ROBOT_SOTA_APP_MANAGER_PORT
+ROBOT_SOTA_APP_MANAGER_TIMEOUT
+ROBOT_SOTA_VSMD_HOST
+ROBOT_SOTA_VSMD_PORT
+ROBOT_SOTA_VSMD_CONNECT_TIMEOUT
+ROBOT_SOTA_VSMD_READ_TIMEOUT
+ROBOT_SOTA_VSMD_WRITE_TIMEOUT
+ROBOT_SOTA_VSMD_MAX_LINE_LENGTH
+ROBOT_SOTA_MOUTH_LED_ID
+```
+
+Containerは`mouth_led_backend`と非secretな
+`mouth_led_backend_diagnostics`を公開する。production protocol、legacy v1、
+Router、command handler、TCP connection handlerには注入していない。構築時には
+socket接続、LOCK、read/write、sleep、pulseを行わない。
+
+通常設定とComposition Rootを検査するsmoke CLI:
+
+```powershell
+python -m robot_controller.diagnostics.mouth_led_backend_smoke
+```
+
+既定はdry-runで、Backendの解決結果だけを表示する。pulseは
+`--confirm-live-write`に加えて設定側の二重opt-inが成立した場合にだけ、
+Containerから取得したBackendへ1回委譲する。
+
+```text
+composition_root_opt_in_in_code = complete
+composition_root_fake_regression = complete
+composition_root_opt_in = pending
+edison_python36_direct_execution = pending
+production_command_integration = pending
+```
+
+`composition_root_opt_in`は人間が実機上でsmoke CLIを実行するまでpendingとする。

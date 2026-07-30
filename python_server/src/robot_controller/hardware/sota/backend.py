@@ -1,4 +1,4 @@
-"""Opt-in Sota VSMD backend; it is not wired into the Composition Root."""
+"""Double-opt-in Sota VSMD mouth LED backend."""
 
 import threading
 import time

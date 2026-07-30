@@ -494,8 +494,8 @@ lock、VSMD write、UNLOCKの自動retryは行わず、bounded observationだけ
 結果はtimer値、非原子的なread観測、cleanup、routing復元、lock解放を含む
 構造化オブジェクトであり、物理的な発光を自動的に成功扱いしない。
 
-Composition Rootには接続していない。既定production Backendは引き続き
-Unavailableであり、診断CLIの明示フラグなしにlive write経路は開かれない。
+この抽出時点ではComposition Rootへ接続せず、既定production BackendをUnavailable
+としていた。後続の二重opt-in接続は14節に記載する。
 
 ## 13. 2026-07-30 抽出operationの実機回帰
 
@@ -535,21 +535,83 @@ app_manager_mouth_led_probe
 
 Backendの生成と`mouth_led_id`設定、`level`、`rise_ms`、`hold_ms`、`fall_ms`の転送、
 成功結果と型付き失敗の表示、live確認前にBackendを生成しないことはFakeで回帰確認
-した。変更後のBackend経路では実機試験を行っていない。
+した。その後、変更後のBackend経路も実機回帰した。Composition Root経路の
+実機smokeは別gateであり、未実施である。
 
 ```text
 thin_probe_uses_sota_vsmd_backend_in_code = complete
 sota_vsmd_backend_fake_regression = complete
-thin_probe_uses_sota_vsmd_backend = pending
-sota_vsmd_backend_regression_on_hardware = pending
+thin_probe_uses_sota_vsmd_backend = complete
+sota_vsmd_backend_regression_on_hardware = complete
 composition_root_opt_in = pending
 edison_python36_direct_execution = pending
 production_command_integration = pending
 ```
 
-次のvalidation stageは、`SotaVsmdBackend.pulse_mouth_led()`を直接通す人手による
-実機回帰、明示的Composition Root opt-in、Edison-local Python 3.6実行、
-production command integrationである。
+次のvalidation stageは、Composition Root経路の人手による実機smoke、
+Edison-local Python 3.6実行、production command integrationである。
 
 詳細:
 [`evidence/mouth-led-pulse-operation-regression-2026-07-30.md`](evidence/mouth-led-pulse-operation-regression-2026-07-30.md)
+
+## 14. Composition Rootへの二重opt-in接続
+
+mouth LED Backendの設定と選択は`mouth_led_composition.py`へ集約し、既存の
+`MockApplicationConfig`、`create_mock_application()`、`MockApplication`へ接続した。
+Application Containerは次を公開する。
+
+```text
+mouth_led_backend: MouthLedBackend
+mouth_led_backend_diagnostics:
+    requested_backend_kind
+    resolved_backend_kind
+    live_hardware_write_enabled
+    mouth_led_backend_configured
+    unavailable_reason
+```
+
+既定kindは`unavailable`である。`mock`はhardware-free Backendを選択する。
+`sota_vsmd`は`ROBOT_HARDWARE_LIVE_WRITE_ENABLED=true`との二重opt-inが成立した
+場合だけ`SotaVsmdBackend`を構築する。live writeが無効な場合は
+`Sota VSMD backend requested, but live hardware write is disabled.`をreasonとして
+保持したUnavailableへfail-closedする。
+
+booleanは文字列`true`と`false`だけを受理する。portは1..65535、timeoutは有限かつ
+正、maximum line lengthは正の整数、hostは非空、mouth LED IDは検証済み14だけを
+受理する。boolをintegerとして扱わず、NaN、Infinity、曖昧なboolean、未知kindを
+configuration errorとして拒否する。
+
+Sota設定には`ROBOT_SOTA_APP_MANAGER_HOST`、`ROBOT_SOTA_APP_MANAGER_PORT`、
+`ROBOT_SOTA_APP_MANAGER_TIMEOUT`、`ROBOT_SOTA_VSMD_HOST`、
+`ROBOT_SOTA_VSMD_PORT`、`ROBOT_SOTA_VSMD_CONNECT_TIMEOUT`、
+`ROBOT_SOTA_VSMD_READ_TIMEOUT`、`ROBOT_SOTA_VSMD_WRITE_TIMEOUT`、
+`ROBOT_SOTA_VSMD_MAX_LINE_LENGTH`、`ROBOT_SOTA_MOUTH_LED_ID`を使用する。
+未指定値には既存transportのloopback endpointとtimeout、line length、LED ID 14を
+使用する。
+
+Backendの構築はconnection-freeである。Composition Root、Container、server startup、
+次のsmoke CLIのdry-runでは、TCP接続、AppManager LOCK、VSMD read/write、sleep、
+LED pulseを行わない。
+
+```powershell
+python -m robot_controller.diagnostics.mouth_led_backend_smoke
+```
+
+smoke CLIは通常と同じenvironment設定、`MockApplicationConfig`、
+`create_mock_application()`を通す。既定はdry-runである。live実行時だけ
+`container.mouth_led_backend.pulse_mouth_led()`を1回呼び、
+`--level`、`--rise-ms`、`--hold-ms`、`--fall-ms`を既存の安全範囲で検証する。
+CLI自身は`SotaVsmdBackend`を直接生成しない。
+
+production protocol、legacy protocol v1、command handler、Router、TCP connection
+handlerにはmouth LED Backendを接続していない。
+
+```text
+composition_root_opt_in_in_code = complete
+composition_root_fake_regression = complete
+composition_root_opt_in = pending
+edison_python36_direct_execution = pending
+production_command_integration = pending
+```
+
+Composition Root経路の実機smokeとEdison-local CPython 3.6実行は未実施である。

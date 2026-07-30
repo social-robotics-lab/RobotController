@@ -482,6 +482,10 @@ class HardwareBackendUnavailableError(HardwareBackendError):
     """A requested hardware operation has no configured implementation."""
 
 
+class ConfigurationError(Exception):
+    """Application configuration is invalid or unsupported."""
+
+
 class UnsupportedHardwarePlatformError(HardwareProbeError):
     """The requested real transport is unavailable on this platform."""
 

@@ -1,11 +1,9 @@
 """Shared mouth LED backend contract tests with no live hardware access."""
 
-import inspect
 import threading
 
 import pytest
 
-from robot_controller import mock_server
 from robot_controller.errors import HardwareBackendUnavailableError
 from robot_controller.hardware.mouth_led_backend import (
     MockMouthLedBackend,
@@ -150,12 +148,6 @@ def test_sota_backend_accepts_only_verified_mouth_led_id():
         SotaVsmdBackend(mouth_led_id=13)
     with pytest.raises(ValueError):
         SotaVsmdBackend(mouth_led_id=True)
-
-
-def test_sota_backend_is_not_wired_into_composition_root():
-    source = inspect.getsource(mock_server)
-    assert "SotaVsmdBackend" not in source
-    assert "app_manager_mouth_led_pulse" not in source
 
 
 def test_same_sota_backend_instance_serializes_overlapping_pulses():
