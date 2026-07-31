@@ -128,11 +128,12 @@ Client C was not reached. Cleanup sent B UNLOCK followed by A UNLOCK, and both
 responses were `OK`. The probe made no automatic retry and does not need to be
 rerun to establish the observed semantics.
 
-The broad capture filter also recorded 10 TCP 6498 packets from an existing
-process. The probe implementation constructs only AppManager transport and
-does not construct VSMD transport, so those packets must not be attributed to
-the probe. Conversely, the capture cannot establish `TCP 6498 packets = 0` for
-the environment; future attribution requires process-level observation or a
+The broad capture contained 478 packets in total, including 410 TCP 6498
+packets that may be routine traffic from an existing process. The probe
+implementation constructs only AppManager transport and does not construct
+VSMD transport, so those packets must not be attributed to the probe.
+Conversely, the capture cannot establish `TCP 6498 packets = 0` for the
+environment; future attribution requires process-level observation or a
 narrower capture method.
 
 Do not interpret `INTERP_LOCK` as a cross-process mutex or LED-ID-exclusive

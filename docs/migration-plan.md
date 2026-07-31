@@ -797,9 +797,9 @@ python -m robot_controller.diagnostics.mouth_led_fault_recovery_smoke
 実機試験と外部証拠inventoryは
 [`evidence/app-manager-lock-competition-20260731.md`](evidence/app-manager-lock-competition-20260731.md)
 に記録した。既知leaseのcleanupではB、Aの順にUNLOCKし、双方が`OK`を返した。
-物理LED点灯状態はremote試験のため観察できず、PCAP内のTCP 6498 packet 10件は
-既存process由来と考えられるもののprobeへの帰属を断定できない。probeの再実行は
-不要である。
+物理LED点灯状態はremote試験のため観察できず、PCAP全体478 packetsのうちTCP 6498に
+一致した410 packetsは既存process由来の定常通信が混入した可能性があるものの、
+probeへの帰属を断定できない。probeの再実行は不要である。
 
 暫定運用条件として、1つのRobotController processだけがmouth LED 14を制御し、
 複数processは同じSota LED IDを制御してはならない。別調停機構の設計・検証前に
