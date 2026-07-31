@@ -161,11 +161,11 @@ Client B: LED 14, timer address 504
 
 ## TCP 6498 attribution limitation
 
-The capture contained 10 TCP 6498 packets. The competition probe constructs
-only AppManager transport; it does not construct VSMD transport. Because the
-filter captured all loopback traffic for ports 6495 and 6498, the 6498 packets
-are consistent with routine communication from an existing process and cannot
-be attributed to the probe.
+The capture contained 478 packets in total, of which 410 matched TCP 6498. The
+competition probe constructs only AppManager transport; it does not construct
+VSMD transport. Because the filter captured all loopback traffic for ports
+6495 and 6498, the 410 TCP 6498 packets are consistent with routine
+communication from an existing process and cannot be attributed to the probe.
 
 Accordingly, the previously proposed criterion `PCAP overall TCP 6498 packets
 = 0` is not usable for this environment. A future test would need process-level
