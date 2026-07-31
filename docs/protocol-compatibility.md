@@ -954,10 +954,13 @@ phase7_mouth_led_golden_path = complete
 Fault recovery does not change the AppManager wire format or the production
 v1/v2 protocol. Within one `AppManagerVsmdLedLock` instance, overlapping LED
 IDs fail before a second LOCK is sent. Independent adapters do not share
-local state; their arbitration is delegated to AppManager. A LOCK `NG` is a
-typed rejection and causes no CONVERT, UNLOCK, or Python VSMD read/write.
-This cross-client behavior is covered by a shared Fake AppManager; live
-lock-contention behavior remains unverified.
+local state. Their arbitration was previously delegated to AppManager based on
+a shared Fake AppManager that rejected Client B with `NG`. The 2026-07-31 live
+test refuted that hypothesis: while A held LED 14, B used a different key to
+LOCK the same LED and converted to a different timer address. A LOCK `NG`
+remains a typed rejection and causes no CONVERT, UNLOCK, or Python VSMD
+read/write, but AppManager does not provide that rejection as LED-ID-exclusive
+cross-process arbitration.
 
 After LOCK succeeds, every CONVERT failure attempts at most one best-effort
 UNLOCK using the exact generated key and immutable IDs. There is no automatic
@@ -972,13 +975,24 @@ loss cannot run Python `finally` and therefore has no code-level cleanup
 guarantee. Unknown-key UNLOCK, blind/global UNLOCK, inferred VSMD writes, and
 automatic AppManager or `vsmd_edison` service control are prohibited.
 
+The live request/response sequence, known-lease cleanup, PCAP attribution
+limitation, read-only post-state, and external evidence hashes are recorded in
+[`evidence/app-manager-lock-competition-20260731.md`](evidence/app-manager-lock-competition-20260731.md).
+The remote test did not observe physical illumination. `INTERP_LOCK` must be
+treated as an interpolation timer lease/slot allocation mechanism, not a
+cross-process mutex. Until a separate coordinator is designed and verified,
+multiple RobotController processes must not control the same Sota LED IDs.
+
 ```text
 phase7_fault_recovery_in_code = complete
 phase7_fault_recovery_fake_regression = complete
-phase7_fault_recovery = pending
+lock-only competition probe = completed_with_unexpected_semantics
+cross-process LED exclusion = not provided by SotaAppManager
+phase7_fault_recovery = pending design correction
+Phase 8 = do not start
 full_sota_command_target_integration = pending
 ```
 
-The pending gate requires a separately reviewed, manually initiated,
-lock-only hardware contention test. The verified production mouth LED normal
-path remains unchanged.
+The probe need not be rerun to establish the observed semantics. The pending
+gate now requires a cross-process exclusion design correction and separate
+verification. The verified production mouth LED normal path remains unchanged.

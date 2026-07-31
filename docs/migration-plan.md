@@ -741,7 +741,8 @@ sota_vsmd_backend_regression_on_hardware = complete
 Remaining Phase 7 and full-target gates:
 
 ```text
-phase7_fault_recovery = pending
+phase7_fault_recovery = pending design correction
+Phase 8 = do not start
 full_sota_command_target_integration = pending
 ```
 
@@ -749,7 +750,8 @@ This completes the Python production LED write, the transition from the
 Unavailable lock path to the production candidate for the mouth LED Backend,
 Composition Root integration for that Backend, the production v2 mouth LED
 command, physical confirmation, cleanup, Output-zero restoration, and the
-single UNLOCK. It does not complete lock contention, non-LIFO release,
+single UNLOCK. It does not complete corrected cross-process exclusion,
+non-LIFO release,
 abnormal-process recovery, full `VsmdSotaCommandTarget` Composition Root
 integration, or Sota single-axis servo control.
 
@@ -761,10 +763,11 @@ Detailed production-command evidence:
 Phase 7の異常系をFake transportとFake memoryで固定した。同一
 `AppManagerVsmdLedLock`内でactive leaseとLED IDが重複した場合は、2件目を
 AppManager request前に`VsmdMouthLedStateError`で拒否する。異なるadapter間の
-排他判断はAppManagerへ委譲し、LOCKが`NG`なら
-`AppManagerLockRejectedError`となり、CONVERT、UNLOCK、VSMD read/writeを行わない。
-このcross-client挙動は共有Fake AppManagerで検証したものであり、実機競合試験の
-完了を意味しない。
+排他判断をAppManagerへ委譲する案は、共有Fake AppManagerでBの`NG`拒否を仮定して
+検証していた。2026-07-31の実機競合試験では、Aのlease中に別keyのBも同じLED ID
+14をLOCKし、Aはtimer 502、Bはtimer 504へCONVERTできたため、この仮定は否定された。
+LOCKが実際に`NG`なら`AppManagerLockRejectedError`となり、CONVERT、UNLOCK、VSMD
+read/writeを行わない既存のtyped rejection処理自体は維持する。
 
 leaseは生成keyとIDsを所有し、UNLOCKは最大1回である。成功したrelease後は予約を
 解除し、異なるkeyとCONVERT結果で再取得できる。CONVERTが`NG`、`null`、不正
@@ -791,14 +794,28 @@ python -m robot_controller.diagnostics.mouth_led_fault_recovery_smoke
 [`operations/sota-mouth-led-lock-recovery.md`](operations/sota-mouth-led-lock-recovery.md)
 に分離した。
 
+実機試験と外部証拠inventoryは
+[`evidence/app-manager-lock-competition-20260731.md`](evidence/app-manager-lock-competition-20260731.md)
+に記録した。既知leaseのcleanupではB、Aの順にUNLOCKし、双方が`OK`を返した。
+物理LED点灯状態はremote試験のため観察できず、PCAP内のTCP 6498 packet 10件は
+既存process由来と考えられるもののprobeへの帰属を断定できない。probeの再実行は
+不要である。
+
+暫定運用条件として、1つのRobotController processだけがmouth LED 14を制御し、
+複数processは同じSota LED IDを制御してはならない。別調停機構の設計・検証前に
+Phase 8を開始しない。
+
 ```text
 phase7_fault_recovery_in_code = complete
 phase7_fault_recovery_fake_regression = complete
-phase7_fault_recovery = pending
+lock-only competition probe = completed_with_unexpected_semantics
+cross-process LED exclusion = not provided by SotaAppManager
+phase7_fault_recovery = pending design correction
+Phase 8 = do not start
 
 phase7_mouth_led_golden_path = complete
 production_command_integration = complete
 full_sota_command_target_integration = pending
 ```
 
-`phase7_fault_recovery`は実機lock-only競合試験が完了するまでpendingとする。
+`phase7_fault_recovery`はcross-process排他設計を修正して検証するまでpendingとする。

@@ -752,11 +752,13 @@ default.
 
 This result completes only the production mouth LED command path. The full
 legacy-v1-facing `VsmdSotaCommandTarget` is not integrated into the
-Composition Root. The next design gate covers lock contention, non-LIFO
-release, and abnormal-process recovery:
+Composition Root. The 2026-07-31 lock competition result showed that the next
+design gate requires cross-process exclusion correction in addition to
+non-LIFO release and abnormal-process recovery:
 
 ```text
-phase7_fault_recovery = pending
+phase7_fault_recovery = pending design correction
+Phase 8 = do not start
 full_sota_command_target_integration = pending
 ```
 
@@ -766,9 +768,11 @@ Detailed production-command evidence:
 ## 17. mouth LED fault-recovery boundary
 
 同一`AppManagerVsmdLedLock` instanceは、activeなLED IDの重複をlocal reservationで
-AppManager送信前にfail-closed拒否する。別instanceは状態を共有せず、cross-process
-相当の競合判断をAppManagerへ委譲する。LOCK拒否後はCONVERT、UNLOCK、VSMD
-read/writeへ進まず、再試行もしない。
+AppManager送信前にfail-closed拒否する。別instanceは状態を共有しない。2026-07-31の
+実機競合試験では、Client Aのlease中に別keyのClient Bも同じLED ID 14をLOCKでき、
+異なるtimer addressへCONVERTできた。したがってcross-process相当の競合判断を
+AppManagerへ委譲できない。LOCKが実際に`NG`を返した場合は従来どおりCONVERT、
+UNLOCK、VSMD read/writeへ進まず、再試行もしない。
 
 `AppManagerLedLockLease`だけが生成key、immutable IDs、CONVERT済みtimer addressを
 所有する。releaseは単回attemptであり、成功後だけadapter reservationを解放する。
@@ -793,9 +797,18 @@ python -m robot_controller.diagnostics.mouth_led_fault_recovery_smoke
 を参照する。production正常系シーケンス、公開`MouthLedBackend` API、v1/v2 wire
 protocolは変更しない。
 
+実機結果の詳細、PCAPの帰属制約、証拠hashは
+[`evidence/app-manager-lock-competition-20260731.md`](evidence/app-manager-lock-competition-20260731.md)
+へ記録した。別process間で同じSota LED IDを制御してはならない。単一command server、
+broker、Unix domain socket、OS lockfile等の別調停機構が設計・検証されるまで、
+AppManagerのleaseをcross-process mutexとして扱わない。
+
 ```text
 phase7_fault_recovery_in_code = complete
 phase7_fault_recovery_fake_regression = complete
-phase7_fault_recovery = pending
+lock-only competition probe = completed_with_unexpected_semantics
+cross-process LED exclusion = not provided by SotaAppManager
+phase7_fault_recovery = pending design correction
+Phase 8 = do not start
 full_sota_command_target_integration = pending
 ```
