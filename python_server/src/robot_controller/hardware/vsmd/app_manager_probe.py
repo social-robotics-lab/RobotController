@@ -10,6 +10,10 @@ import sys
 import time
 import typing
 
+from robot_controller.diagnostic_process_lock import (
+    acquire_live_process_lock,
+    combine_process_lock_close,
+)
 from robot_controller.hardware.vsmd.app_manager_lock import (
     AppManagerLedLock,
 )
@@ -19,6 +23,7 @@ from robot_controller.hardware.vsmd.app_manager_transport import (
     DEFAULT_APP_MANAGER_PORT,
     DEFAULT_APP_MANAGER_TIMEOUT_SECONDS,
 )
+from robot_controller.process_lock import ProcessLockContextCleanupError
 
 
 DEFAULT_LED_ID = 14
@@ -114,6 +119,7 @@ def create_argument_parser():
         type=_positive_timeout,
         default=DEFAULT_APP_MANAGER_TIMEOUT_SECONDS,
     )
+    parser.add_argument("--confirm-live-lock", action="store_true")
     return parser
 
 
@@ -138,10 +144,15 @@ def main(
     transport_factory=AppManagerTcpTransport,
     lock_factory=AppManagerLedLock,
     sleep_function=time.sleep,
+    process_lock_factory=None,
 ):
-    # type: (typing.Optional[typing.Sequence[str]], typing.Any, typing.Any, typing.Any) -> int
+    # type: (typing.Optional[typing.Sequence[str]], typing.Any, typing.Any, typing.Any, typing.Any) -> int
     """Run one bounded LOCK, hold, and UNLOCK sequence without retry."""
     arguments = create_argument_parser().parse_args(argv)
+    if not arguments.confirm_live_lock:
+        print("live_lock=false")
+        print("result=confirmation_required")
+        return 0
     print("SotaAppManager LED lock probe")
     print("endpoint={0}:{1}".format(arguments.host, arguments.port))
     print("led_ids={0}".format(arguments.led_id))
@@ -159,7 +170,9 @@ def main(
         )
     )
 
+    process_lock = None
     try:
+        process_lock = acquire_live_process_lock(process_lock_factory)
         timeout = _common_timeout(arguments)
         transport = transport_factory(
             host=arguments.host,
@@ -188,14 +201,38 @@ def main(
             else:
                 print("lock_released=true")
     except BaseException as error:
+        if process_lock is not None:
+            error = combine_process_lock_close(process_lock, error)
         print("result=failure", file=sys.stderr)
         print(
             "error_type={0}".format(type(error).__name__),
             file=sys.stderr,
         )
+        if isinstance(error, ProcessLockContextCleanupError):
+            print(
+                "operation_error_type={0}".format(
+                    type(error.operation_error).__name__
+                ),
+                file=sys.stderr,
+            )
+            print(
+                "process_lock_cleanup_error_type={0}".format(
+                    type(error.cleanup_error).__name__
+                ),
+                file=sys.stderr,
+            )
         print("error={0}".format(error), file=sys.stderr)
         return 1
 
+    close_error = combine_process_lock_close(process_lock, None)
+    if close_error is not None:
+        print("result=failure", file=sys.stderr)
+        print(
+            "error_type={0}".format(type(close_error).__name__),
+            file=sys.stderr,
+        )
+        print("error={0}".format(close_error), file=sys.stderr)
+        return 1
     print("result=success")
     return 0
 

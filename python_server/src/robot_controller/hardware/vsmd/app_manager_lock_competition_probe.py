@@ -9,6 +9,10 @@ import math
 import sys
 import typing
 
+from robot_controller.diagnostic_process_lock import (
+    acquire_live_process_lock,
+    combine_process_lock_close,
+)
 from robot_controller.hardware.vsmd.app_manager_lock import (
     AppManagerLedLock,
 )
@@ -18,6 +22,9 @@ from robot_controller.hardware.vsmd.app_manager_transport import (
     DEFAULT_APP_MANAGER_PORT,
     DEFAULT_APP_MANAGER_TIMEOUT_SECONDS,
 )
+from robot_controller.process_lock import ProcessLockContextCleanupError
+
+
 DEFAULT_LED_ID = 14
 DEFAULT_KEY_PREFIX = "phase7-lock"
 
@@ -286,6 +293,19 @@ def _print_failure(error, error_output):
                 ),
                 file=error_output,
             )
+    if isinstance(error, ProcessLockContextCleanupError):
+        print(
+            "operation_error_type={0}".format(
+                type(error.operation_error).__name__
+            ),
+            file=error_output,
+        )
+        print(
+            "process_lock_cleanup_error_type={0}".format(
+                type(error.cleanup_error).__name__
+            ),
+            file=error_output,
+        )
     print("error={0}".format(error), file=error_output)
 
 
@@ -295,8 +315,9 @@ def main(
     lock_factory=AppManagerLedLock,
     output=None,
     error_output=None,
+    process_lock_factory=None,
 ):
-    # type: (typing.Optional[typing.Sequence[str]], typing.Any, typing.Any, typing.Any, typing.Any) -> int
+    # type: (typing.Optional[typing.Sequence[str]], typing.Any, typing.Any, typing.Any, typing.Any, typing.Any) -> int
     """Run the explicit A/B allocation and B/A release without retry."""
     if output is None:
         output = sys.stdout
@@ -314,13 +335,22 @@ def main(
     print("live_lock=true", file=output)
     print("led_id={0}".format(arguments.led_id), file=output)
     print("", file=output)
+    process_lock = None
     try:
+        process_lock = acquire_live_process_lock(process_lock_factory)
         locks, keys = _new_clients(
             arguments, transport_factory, lock_factory
         )
         _run_competition(arguments, locks, keys, output)
     except BaseException as error:
+        if process_lock is not None:
+            error = combine_process_lock_close(process_lock, error)
         _print_failure(error, error_output)
+        return 1
+
+    close_error = combine_process_lock_close(process_lock, None)
+    if close_error is not None:
+        _print_failure(close_error, error_output)
         return 1
 
     print("", file=output)

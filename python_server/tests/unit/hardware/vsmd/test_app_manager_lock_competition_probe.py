@@ -19,6 +19,34 @@ from robot_controller.hardware.vsmd.app_manager_codec import (
     SERIALIZED_OK,
 )
 from robot_controller.hardware.vsmd.app_manager_lock import AppManagerLedLock
+from robot_controller.process_lock import (
+    ProcessLockReleaseError,
+    ProcessLockUnavailableError,
+)
+
+
+class FakeProcessLock(object):
+    def __init__(self, acquire_error=None, close_error=None, on_close=None):
+        self.acquire_error = acquire_error
+        self.close_error = close_error
+        self.on_close = on_close
+        self.acquire_calls = 0
+        self.close_calls = 0
+        self.is_acquired = False
+
+    def acquire(self):
+        self.acquire_calls += 1
+        if self.acquire_error is not None:
+            raise self.acquire_error
+        self.is_acquired = True
+
+    def close(self):
+        self.close_calls += 1
+        if self.on_close is not None:
+            self.on_close()
+        self.is_acquired = False
+        if self.close_error is not None:
+            raise self.close_error
 
 
 def _serialized_short(value):
@@ -143,6 +171,7 @@ def _run(factory, arguments=None):
         lock_factory=AppManagerLedLock,
         output=output,
         error_output=error_output,
+        process_lock_factory=FakeProcessLock,
     )
     return status, output.getvalue(), error_output.getvalue()
 
@@ -157,6 +186,9 @@ def test_confirmation_absent_creates_no_transport():
         transport_factory=factory,
         output=output,
         error_output=error_output,
+        process_lock_factory=lambda: pytest.fail(
+            "process lock must not be created"
+        ),
     )
 
     assert status == 0
@@ -167,6 +199,77 @@ def test_confirmation_absent_creates_no_transport():
         "result=confirmation_required",
     ]
     assert error_output.getvalue() == ""
+
+
+def test_contention_creates_no_transport_or_request():
+    factory = FakeTransportFactory(FakeAppManagerSlotAllocator())
+    process_lock = FakeProcessLock(
+        acquire_error=ProcessLockUnavailableError("held")
+    )
+    output = io.StringIO()
+    error_output = io.StringIO()
+
+    status = module.main(
+        ["--confirm-live-lock"],
+        transport_factory=factory,
+        process_lock_factory=lambda: process_lock,
+        output=output,
+        error_output=error_output,
+    )
+
+    assert status == 1
+    assert process_lock.acquire_calls == 1
+    assert process_lock.close_calls == 0
+    assert factory.call_count == 0
+    assert "error_type=ProcessLockUnavailableError" in error_output.getvalue()
+
+
+def test_process_lock_closes_after_b_then_a_known_lease_cleanup():
+    allocator = FakeAppManagerSlotAllocator()
+    factory = FakeTransportFactory(allocator)
+
+    def verify_cleanup_complete():
+        assert [event[0] for event in allocator.events[-2:]] == ["b", "a"]
+        assert [event[1] for event in allocator.events[-2:]] == [
+            INTERP_UNLOCK_COMMAND,
+            INTERP_UNLOCK_COMMAND,
+        ]
+
+    process_lock = FakeProcessLock(on_close=verify_cleanup_complete)
+    status = module.main(
+        ["--confirm-live-lock"],
+        transport_factory=factory,
+        process_lock_factory=lambda: process_lock,
+        output=io.StringIO(),
+        error_output=io.StringIO(),
+    )
+
+    assert status == 0
+    assert process_lock.close_calls == 1
+
+
+def test_operation_and_process_lock_close_errors_are_both_reported():
+    allocator = FakeAppManagerSlotAllocator(
+        {("a", INTERP_LOCK_COMMAND): RuntimeError("operation")}
+    )
+    factory = FakeTransportFactory(allocator)
+    release_error = ProcessLockReleaseError(OSError("unlock"), None)
+    process_lock = FakeProcessLock(close_error=release_error)
+    error_output = io.StringIO()
+
+    status = module.main(
+        ["--confirm-live-lock"],
+        transport_factory=factory,
+        process_lock_factory=lambda: process_lock,
+        output=io.StringIO(),
+        error_output=error_output,
+    )
+
+    assert status == 1
+    assert process_lock.close_calls == 1
+    assert "error_type=ProcessLockContextCleanupError" in error_output.getvalue()
+    assert "operation_error_type=RuntimeError" in error_output.getvalue()
+    assert "process_lock_cleanup_error_type=ProcessLockReleaseError" in error_output.getvalue()
 
 
 def test_observed_slot_allocation_has_exact_commands_and_distinct_timers():

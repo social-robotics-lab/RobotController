@@ -14,6 +14,22 @@ from robot_controller.hardware.vsmd.app_manager_codec import (
 from robot_controller.hardware.vsmd.app_manager_lock import (
     AppManagerLedLock,
 )
+from robot_controller.process_lock import ProcessLockUnavailableError
+
+
+class FakeProcessLock(object):
+    def __init__(self, acquire_error=None):
+        self.acquire_error = acquire_error
+        self.acquire_calls = 0
+        self.close_calls = 0
+
+    def acquire(self):
+        self.acquire_calls += 1
+        if self.acquire_error is not None:
+            raise self.acquire_error
+
+    def close(self):
+        self.close_calls += 1
 
 
 def serialized_short(value):
@@ -65,6 +81,7 @@ def test_probe_runs_one_lock_convert_hold_unlock_sequence(capsys):
     sleeps = []
     status = module.main(
         [
+            "--confirm-live-lock",
             "--host",
             "127.0.0.1",
             "--port",
@@ -76,6 +93,7 @@ def test_probe_runs_one_lock_convert_hold_unlock_sequence(capsys):
         ],
         transport_factory=factory,
         sleep_function=sleeps.append,
+        process_lock_factory=FakeProcessLock,
     )
     assert status == 0
     assert factory.call_count == 1
@@ -105,6 +123,7 @@ def test_cli_host_port_led_hold_and_common_timeout_are_reflected(capsys):
     sleeps = []
     status = module.main(
         [
+            "--confirm-live-lock",
             "--host",
             "localhost",
             "--port",
@@ -122,6 +141,7 @@ def test_cli_host_port_led_hold_and_common_timeout_are_reflected(capsys):
         ],
         transport_factory=factory,
         sleep_function=sleeps.append,
+        process_lock_factory=FakeProcessLock,
     )
     assert status == 0
     assert factory.keywords == {
@@ -152,6 +172,7 @@ def test_unequal_timeouts_fail_closed_without_creating_transport(capsys):
     factory = TransportFactory(FakeTransport([]))
     status = module.main(
         [
+            "--confirm-live-lock",
             "--connect-timeout",
             "1",
             "--read-timeout",
@@ -161,6 +182,7 @@ def test_unequal_timeouts_fail_closed_without_creating_transport(capsys):
         ],
         transport_factory=factory,
         sleep_function=lambda unused_seconds: None,
+        process_lock_factory=FakeProcessLock,
     )
     assert status == 1
     assert factory.call_count == 0
@@ -173,9 +195,10 @@ def test_lock_rejection_is_nonzero_and_does_not_unlock(capsys):
     transport = FakeTransport([SERIALIZED_NG])
     factory = TransportFactory(transport)
     status = module.main(
-        [],
+        ["--confirm-live-lock"],
         transport_factory=factory,
         sleep_function=lambda unused_seconds: None,
+        process_lock_factory=FakeProcessLock,
     )
     assert status == 1
     assert request_commands(transport) == ["LOCK"]
@@ -190,9 +213,10 @@ def test_release_failure_is_nonzero_and_never_sends_second_unlock(capsys):
     )
     factory = TransportFactory(transport)
     status = module.main(
-        [],
+        ["--confirm-live-lock"],
         transport_factory=factory,
         sleep_function=lambda unused_seconds: None,
+        process_lock_factory=FakeProcessLock,
     )
     assert status == 1
     assert request_commands(transport) == ["LOCK", "CONVERT", "UNLOCK"]
@@ -212,9 +236,10 @@ def test_hold_exception_still_releases_once_and_returns_nonzero(capsys):
         raise RuntimeError("hold failed")
 
     status = module.main(
-        [],
+        ["--confirm-live-lock"],
         transport_factory=factory,
         sleep_function=fail_hold,
+        process_lock_factory=FakeProcessLock,
     )
     assert status == 1
     assert request_commands(transport) == ["LOCK", "CONVERT", "UNLOCK"]
@@ -241,3 +266,41 @@ def test_probe_source_has_no_direct_vsmd_memory_or_port_reference():
 def test_default_lock_factory_is_the_existing_app_manager_lock():
     signature = inspect.signature(module.main)
     assert signature.parameters["lock_factory"].default is AppManagerLedLock
+
+
+def test_confirmation_absent_creates_no_process_lock_or_transport(capsys):
+    transport = TransportFactory(FakeTransport([]))
+    lock_factories = []
+
+    status = module.main(
+        [],
+        transport_factory=transport,
+        process_lock_factory=lambda: lock_factories.append(True),
+    )
+
+    assert status == 0
+    assert lock_factories == []
+    assert transport.call_count == 0
+    assert "result=confirmation_required" in capsys.readouterr().out
+
+
+def test_process_lock_contention_creates_no_transport_or_sleep(capsys):
+    transport = TransportFactory(FakeTransport([]))
+    process_lock = FakeProcessLock(
+        ProcessLockUnavailableError("held")
+    )
+    sleeps = []
+
+    status = module.main(
+        ["--confirm-live-lock"],
+        transport_factory=transport,
+        sleep_function=sleeps.append,
+        process_lock_factory=lambda: process_lock,
+    )
+
+    assert status == 1
+    assert process_lock.acquire_calls == 1
+    assert process_lock.close_calls == 0
+    assert transport.call_count == 0
+    assert sleeps == []
+    assert "ProcessLockUnavailableError" in capsys.readouterr().err

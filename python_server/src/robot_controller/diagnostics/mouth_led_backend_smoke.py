@@ -4,6 +4,10 @@ import argparse
 import sys
 import typing
 
+from robot_controller.diagnostic_process_lock import (
+    acquire_live_process_lock,
+    combine_process_lock_close,
+)
 from robot_controller.hardware.mouth_led_backend import (
     validate_mouth_led_duration,
     validate_mouth_led_hold,
@@ -14,8 +18,10 @@ from robot_controller.mock_server import (
     create_mock_application,
 )
 from robot_controller.mouth_led_composition import (
+    BACKEND_SOTA_VSMD,
     load_mouth_led_backend_settings,
 )
+from robot_controller.process_lock import ProcessLockContextCleanupError
 
 
 DEFAULT_LEVEL = 16
@@ -147,10 +153,11 @@ def main(
     argv=None,
     environ=None,
     application_factory=create_mock_application,
+    process_lock_factory=None,
     output=None,
     error_output=None,
 ):
-    # type: (typing.Optional[typing.Sequence[str]], typing.Any, typing.Any, typing.Any, typing.Any) -> int
+    # type: (typing.Optional[typing.Sequence[str]], typing.Any, typing.Any, typing.Any, typing.Any, typing.Any) -> int
     """Compose normally and optionally invoke exactly one backend pulse."""
     if output is None:
         output = sys.stdout
@@ -158,8 +165,18 @@ def main(
         error_output = sys.stderr
     arguments = build_argument_parser().parse_args(argv)
     application = None
+    process_lock = None
+    operation_error = None  # type: typing.Optional[BaseException]
     try:
         settings = load_mouth_led_backend_settings(environ)
+        if (
+            arguments.confirm_live_write
+            and settings.backend_kind == BACKEND_SOTA_VSMD
+            and settings.live_hardware_write_enabled is True
+        ):
+            process_lock = acquire_live_process_lock(
+                process_lock_factory
+            )
         application = application_factory(
             MockApplicationConfig(mouth_led_settings=settings)
         )
@@ -188,9 +205,15 @@ def main(
             ),
             file=output,
         )
-        print("result=success", file=output)
-        return 0
-    except Exception as error:
+    except BaseException as error:
+        operation_error = error
+    if process_lock is not None:
+        operation_error = combine_process_lock_close(
+            process_lock, operation_error
+        )
+    if operation_error is not None:
+        if not isinstance(operation_error, Exception):
+            raise operation_error
         if application is not None:
             diagnostics = getattr(
                 application.mouth_led_backend,
@@ -203,11 +226,28 @@ def main(
                 )
         print("result=failure", file=error_output)
         print(
-            "error_type={0}".format(type(error).__name__),
+            "error_type={0}".format(type(operation_error).__name__),
             file=error_output,
         )
-        print("error={0}".format(error), file=error_output)
+        if isinstance(
+            operation_error, ProcessLockContextCleanupError
+        ):
+            print(
+                "operation_error_type={0}".format(
+                    type(operation_error.operation_error).__name__
+                ),
+                file=error_output,
+            )
+            print(
+                "process_lock_cleanup_error_type={0}".format(
+                    type(operation_error.cleanup_error).__name__
+                ),
+                file=error_output,
+            )
+        print("error={0}".format(operation_error), file=error_output)
         return 1
+    print("result=success", file=output)
+    return 0
 
 
 if __name__ == "__main__":

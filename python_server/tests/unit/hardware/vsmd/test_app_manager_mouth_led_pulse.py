@@ -50,6 +50,10 @@ from robot_controller.hardware.vsmd.sota_memory_map import (
     SOTA_MOUTH_TRIGGER_POINTER_ADDRESS,
 )
 from robot_controller.hardware.vsmd.typed_memory import VsmdTypedMemory
+from robot_controller.process_lock import (
+    ProcessLockReleaseError,
+    ProcessLockUnavailableError,
+)
 
 
 PRE_TRIGGER_POINTER = 500
@@ -402,6 +406,24 @@ class FakeClock(object):
         self.now += seconds
 
 
+class FakeDiagnosticProcessLock(object):
+    def __init__(self, acquire_error=None, close_error=None):
+        self.acquire_error = acquire_error
+        self.close_error = close_error
+        self.acquire_calls = 0
+        self.close_calls = 0
+
+    def acquire(self):
+        self.acquire_calls += 1
+        if self.acquire_error is not None:
+            raise self.acquire_error
+
+    def close(self):
+        self.close_calls += 1
+        if self.close_error is not None:
+            raise self.close_error
+
+
 def test_confirm_flag_absent_creates_no_transport_or_memory(capsys):
     calls = []
 
@@ -419,10 +441,69 @@ def test_confirm_flag_absent_creates_no_transport_or_memory(capsys):
         app_manager_transport_factory=fail_factory,
         memory_factory=fail_memory,
         backend_factory=fail_factory,
+        process_lock_factory=lambda: pytest.fail(
+            "process lock must not be created"
+        ),
     )
     assert status != 0
     assert calls == []
     assert "live_write=false" in capsys.readouterr().out
+
+
+def test_cli_process_lock_contention_creates_no_live_factory(capsys):
+    process_lock = FakeDiagnosticProcessLock(
+        acquire_error=ProcessLockUnavailableError("held")
+    )
+    backend_calls = []
+
+    status = cli_module.main(
+        ["--confirm-live-write"],
+        backend_factory=lambda **options: backend_calls.append(options),
+        process_lock_factory=lambda: process_lock,
+        sleep_function=lambda seconds: pytest.fail("sleep called"),
+    )
+
+    assert status == 1
+    assert process_lock.acquire_calls == 1
+    assert process_lock.close_calls == 0
+    assert backend_calls == []
+    assert "ProcessLockUnavailableError" in capsys.readouterr().err
+
+
+def test_cli_operation_and_process_lock_close_errors_are_combined(capsys):
+    release_error = ProcessLockReleaseError(OSError("unlock"), None)
+    process_lock = FakeDiagnosticProcessLock(close_error=release_error)
+
+    def fail_backend(**unused_options):
+        raise RuntimeError("backend failed")
+
+    status = cli_module.main(
+        ["--confirm-live-write"],
+        backend_factory=fail_backend,
+        process_lock_factory=lambda: process_lock,
+    )
+
+    assert status == 1
+    assert process_lock.close_calls == 1
+    error = capsys.readouterr().err
+    assert "error_type=ProcessLockContextCleanupError" in error
+    assert "operation_error_type=RuntimeError" in error
+    assert "process_lock_cleanup_error_type=ProcessLockReleaseError" in error
+
+
+@pytest.mark.parametrize("operation_error", [KeyboardInterrupt(), SystemExit()])
+def test_cli_interrupts_close_process_lock(operation_error):
+    process_lock = FakeDiagnosticProcessLock()
+
+    def interrupt_backend(**unused_options):
+        raise operation_error
+
+    assert cli_module.main(
+        ["--confirm-live-write"],
+        backend_factory=interrupt_backend,
+        process_lock_factory=lambda: process_lock,
+    ) == 1
+    assert process_lock.close_calls == 1
 
 
 def test_confirmed_cli_constructs_backend_and_calls_pulse_once(capsys):
@@ -462,6 +543,7 @@ def test_confirmed_cli_constructs_backend_and_calls_pulse_once(capsys):
             "--confirm-live-write",
         ],
         backend_factory=backend_factory,
+        process_lock_factory=FakeDiagnosticProcessLock,
     )
     captured = capsys.readouterr()
     assert status == 1
@@ -1578,6 +1660,7 @@ def test_confirmed_cli_uses_supplied_endpoints_and_reports_success(capsys):
         app_manager_transport_factory=app_factory,
         memory_factory=lambda unused_transport: VsmdTypedMemory(memory),
         sleep_function=lambda unused_seconds: None,
+        process_lock_factory=FakeDiagnosticProcessLock,
     )
     output = capsys.readouterr().out
     assert status == 0
@@ -1648,6 +1731,7 @@ def test_cli_reports_failure_for_non_successful_release(
         app_manager_transport_factory=lambda **unused_kwargs: app_transport,
         memory_factory=lambda unused_transport: VsmdTypedMemory(memory),
         sleep_function=lambda unused_seconds: None,
+        process_lock_factory=FakeDiagnosticProcessLock,
     )
     captured = capsys.readouterr()
     assert status != 0
@@ -1669,6 +1753,7 @@ def test_cli_reports_primary_error_and_emergency_fade_status(capsys):
         app_manager_transport_factory=lambda **unused_kwargs: app_transport,
         memory_factory=lambda unused_transport: VsmdTypedMemory(memory),
         sleep_function=lambda unused_seconds: None,
+        process_lock_factory=FakeDiagnosticProcessLock,
     )
     captured = capsys.readouterr()
     assert status != 0

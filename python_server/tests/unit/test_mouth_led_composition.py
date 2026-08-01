@@ -25,6 +25,28 @@ from robot_controller.mouth_led_composition import (
     load_mouth_led_backend_settings,
     resolve_mouth_led_backend,
 )
+from robot_controller.process_lock import (
+    ProcessLockReleaseError,
+    ProcessLockUnavailableError,
+)
+
+
+class FakeDiagnosticProcessLock(object):
+    def __init__(self, acquire_error=None, close_error=None):
+        self.acquire_error = acquire_error
+        self.close_error = close_error
+        self.acquire_calls = 0
+        self.close_calls = 0
+
+    def acquire(self):
+        self.acquire_calls += 1
+        if self.acquire_error is not None:
+            raise self.acquire_error
+
+    def close(self):
+        self.close_calls += 1
+        if self.close_error is not None:
+            raise self.close_error
 
 
 def test_environment_defaults_to_unavailable_with_safe_endpoint_defaults():
@@ -196,6 +218,9 @@ def test_sota_composition_and_smoke_dry_run_open_no_socket(monkeypatch):
         },
         output=output,
         error_output=error_output,
+        process_lock_factory=lambda: pytest.fail(
+            "dry-run must not create process lock"
+        ),
     )
 
     assert status == 0
@@ -228,6 +253,9 @@ def test_smoke_confirm_calls_container_backend_once_with_all_arguments():
         ],
         environ={"ROBOT_MOUTH_LED_BACKEND": "mock"},
         application_factory=lambda config: Application(),
+        process_lock_factory=lambda: pytest.fail(
+            "mock backend must not create process lock"
+        ),
         output=output,
         error_output=io.StringIO(),
     )
@@ -246,6 +274,9 @@ def test_unavailable_smoke_confirm_preserves_typed_failure():
         environ={},
         output=output,
         error_output=error_output,
+        process_lock_factory=lambda: pytest.fail(
+            "unavailable backend must not create process lock"
+        ),
     )
 
     assert status != 0
@@ -293,6 +324,7 @@ def test_smoke_failure_prints_backend_lock_pointer_diagnostics():
         application_factory=lambda config: Application(),
         output=io.StringIO(),
         error_output=error_output,
+        process_lock_factory=FakeDiagnosticProcessLock,
     )
 
     assert status != 0
@@ -301,3 +333,56 @@ def test_smoke_failure_prints_backend_lock_pointer_diagnostics():
     assert "lock_pointer_final_value=0x01f4" in error_output.getvalue()
     assert "lock_pointer_converged=false" in error_output.getvalue()
     assert "error_type=VsmdMouthLedStateError" in error_output.getvalue()
+
+
+def test_live_sota_smoke_contention_prevents_application_creation():
+    process_lock = FakeDiagnosticProcessLock(
+        acquire_error=ProcessLockUnavailableError("held")
+    )
+    application_calls = []
+    error_output = io.StringIO()
+
+    status = mouth_led_backend_smoke.main(
+        ["--confirm-live-write"],
+        environ={
+            "ROBOT_MOUTH_LED_BACKEND": "sota_vsmd",
+            "ROBOT_HARDWARE_LIVE_WRITE_ENABLED": "true",
+        },
+        application_factory=lambda config: application_calls.append(config),
+        process_lock_factory=lambda: process_lock,
+        output=io.StringIO(),
+        error_output=error_output,
+    )
+
+    assert status == 1
+    assert process_lock.acquire_calls == 1
+    assert process_lock.close_calls == 0
+    assert application_calls == []
+    assert "error_type=ProcessLockUnavailableError" in error_output.getvalue()
+
+
+def test_live_sota_smoke_combines_operation_and_lock_close_errors():
+    release_error = ProcessLockReleaseError(OSError("unlock"), None)
+    process_lock = FakeDiagnosticProcessLock(close_error=release_error)
+    error_output = io.StringIO()
+
+    def fail_application(config):
+        raise RuntimeError("application failed")
+
+    status = mouth_led_backend_smoke.main(
+        ["--confirm-live-write"],
+        environ={
+            "ROBOT_MOUTH_LED_BACKEND": "sota_vsmd",
+            "ROBOT_HARDWARE_LIVE_WRITE_ENABLED": "true",
+        },
+        application_factory=fail_application,
+        process_lock_factory=lambda: process_lock,
+        output=io.StringIO(),
+        error_output=error_output,
+    )
+
+    assert status == 1
+    assert process_lock.close_calls == 1
+    assert "error_type=ProcessLockContextCleanupError" in error_output.getvalue()
+    assert "operation_error_type=RuntimeError" in error_output.getvalue()
+    assert "process_lock_cleanup_error_type=ProcessLockReleaseError" in error_output.getvalue()

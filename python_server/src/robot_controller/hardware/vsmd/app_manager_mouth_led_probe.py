@@ -6,6 +6,10 @@ import sys
 import time
 import typing
 
+from robot_controller.diagnostic_process_lock import (
+    acquire_live_process_lock,
+    combine_process_lock_close,
+)
 from robot_controller.hardware.sota.backend import SotaVsmdBackend
 from robot_controller.hardware.vsmd.app_manager_mouth_led_pulse import (
     ActiveInterpolationState,
@@ -41,6 +45,7 @@ from robot_controller.hardware.vsmd.sota_memory_map import (
     SOTA_MOUTH_GLOBAL_LED_ID,
 )
 from robot_controller.hardware.vsmd.transport import VsmdTcpTransport
+from robot_controller.process_lock import ProcessLockContextCleanupError
 
 
 ProbeSnapshot = MouthLedPulseSnapshot
@@ -333,8 +338,9 @@ def main(
     memory_factory=None,
     sleep_function=time.sleep,
     backend_factory=SotaVsmdBackend,
+    process_lock_factory=None,
 ):
-    # type: (typing.Optional[typing.Sequence[str]], typing.Any, typing.Any, typing.Any, typing.Any, typing.Any) -> int
+    # type: (typing.Optional[typing.Sequence[str]], typing.Any, typing.Any, typing.Any, typing.Any, typing.Any, typing.Any) -> int
     """Run the live probe only after explicit confirmation."""
     arguments = create_argument_parser().parse_args(argv)
     print("Sota AppManager mouth LED live probe")
@@ -362,7 +368,9 @@ def main(
     )
 
     backend = None  # type: typing.Any
+    process_lock = None
     try:
+        process_lock = acquire_live_process_lock(process_lock_factory)
         backend = backend_factory(
             app_manager_host=arguments.app_manager_host,
             app_manager_port=arguments.app_manager_port,
@@ -387,6 +395,8 @@ def main(
             fall_ms=arguments.duration_ms,
         )
     except BaseException as error:
+        if process_lock is not None:
+            error = combine_process_lock_close(process_lock, error)
         diagnostics = (
             None
             if backend is None
@@ -531,7 +541,30 @@ def main(
             "error_type={0}".format(type(error).__name__),
             file=sys.stderr,
         )
+        if isinstance(error, ProcessLockContextCleanupError):
+            print(
+                "operation_error_type={0}".format(
+                    type(error.operation_error).__name__
+                ),
+                file=sys.stderr,
+            )
+            print(
+                "process_lock_cleanup_error_type={0}".format(
+                    type(error.cleanup_error).__name__
+                ),
+                file=sys.stderr,
+            )
         print("error={0}".format(error), file=sys.stderr)
+        return 1
+
+    close_error = combine_process_lock_close(process_lock, None)
+    if close_error is not None:
+        print("result=failure", file=sys.stderr)
+        print(
+            "error_type={0}".format(type(close_error).__name__),
+            file=sys.stderr,
+        )
+        print("error={0}".format(close_error), file=sys.stderr)
         return 1
 
     _print_snapshot("pre", result.preflight, sys.stdout)
