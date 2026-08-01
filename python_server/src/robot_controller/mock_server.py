@@ -21,10 +21,12 @@ from robot_controller.motion_scheduler import MotionSchedulingCommandTarget
 from robot_controller.models import IdleMotionSettings, Motion, Pose
 from robot_controller.hardware.mouth_led_backend import MouthLedBackend
 from robot_controller.mouth_led_composition import (
+    BACKEND_SOTA_VSMD,
     MouthLedBackendSettings,
     load_mouth_led_backend_settings,
     resolve_mouth_led_backend,
 )
+from robot_controller.process_lock import ProcessLockContextCleanupError
 from robot_controller.profiles import (
     RobotProfile,
     create_mock_robot_profile,
@@ -55,6 +57,30 @@ SUPPORTED_LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR")
 
 class _SignalShutdown(BaseException):
     """Interrupt a blocking server call after a console stop request."""
+
+
+class _MockServerLifecycleCleanupError(Exception):
+    """Preserve an operation failure and application cleanup failures."""
+
+    def __init__(self, operation_error, cleanup_errors):
+        # type: (typing.Optional[BaseException], typing.Sequence[typing.Tuple[str, BaseException]]) -> None
+        self.operation_error = operation_error
+        self.cleanup_errors = tuple(cleanup_errors)
+        operation_name = (
+            "none"
+            if operation_error is None
+            else type(operation_error).__name__
+        )
+        cleanup_names = ",".join(
+            "{0}={1}".format(phase, type(error).__name__)
+            for phase, error in self.cleanup_errors
+        )
+        Exception.__init__(
+            self,
+            "Mock server lifecycle operation={0} cleanup={1}".format(
+                operation_name, cleanup_names
+            ),
+        )
 
 
 _MockApplicationConfigBase = collections.namedtuple(
@@ -609,8 +635,63 @@ def _restore_signal_handlers(previous_handlers):
         signal.signal(signal_number, handler)
 
 
-def main(argv=None):
-    # type: (typing.Optional[typing.Sequence[str]]) -> int
+def _requires_sota_process_lock(settings):
+    # type: (MouthLedBackendSettings) -> bool
+    """Return whether the live Sota double opt-in requires process locking."""
+    return (
+        settings.backend_kind == BACKEND_SOTA_VSMD
+        and settings.live_hardware_write_enabled is True
+    )
+
+
+def _create_default_process_lock():
+    # type: () -> typing.Any
+    """Construct the POSIX lock lazily only for the live Sota path."""
+    from robot_controller.posix_process_lock import FcntlProcessLock
+
+    return FcntlProcessLock()
+
+
+def _combine_lifecycle_errors(operation_error, cleanup_errors):
+    # type: (typing.Optional[BaseException], typing.Sequence[typing.Tuple[str, BaseException]]) -> typing.Optional[BaseException]
+    if cleanup_errors:
+        return _MockServerLifecycleCleanupError(
+            operation_error, cleanup_errors
+        )
+    return operation_error
+
+
+def _collect_error_type_names(error):
+    # type: (BaseException) -> typing.Tuple[str, ...]
+    names = []  # type: typing.List[str]
+
+    def collect(current):
+        # type: (BaseException) -> None
+        name = type(current).__name__
+        if name not in names:
+            names.append(name)
+        if isinstance(current, ProcessLockContextCleanupError):
+            collect(current.operation_error)
+            collect(current.cleanup_error)
+        elif isinstance(current, _MockServerLifecycleCleanupError):
+            if current.operation_error is not None:
+                collect(current.operation_error)
+            for unused_phase, cleanup_error in current.cleanup_errors:
+                collect(cleanup_error)
+
+    collect(error)
+    return tuple(names)
+
+
+def main(
+    argv=None,
+    process_lock_factory=None,
+    application_factory=None,
+    environ=None,
+    signal_handler_installer=None,
+    signal_handler_restorer=None,
+):
+    # type: (typing.Optional[typing.Sequence[str]], typing.Any, typing.Any, typing.Optional[typing.Mapping[str, str]], typing.Any, typing.Any) -> int
     """Run the Mock CLI and return a process exit status."""
     arguments = parse_arguments(argv)
     logging.basicConfig(
@@ -619,9 +700,31 @@ def main(argv=None):
     )
 
     application = None
+    process_lock = None
+    process_lock_acquired = False
     stop_requested = threading.Event()
     previous_handlers = {}
+    operation_error = None  # type: typing.Optional[BaseException]
+    cleanup_errors = []  # type: typing.List[typing.Tuple[str, BaseException]]
+    lock_cleanup_error = None  # type: typing.Optional[BaseException]
+    stop_was_requested = False
+    if environ is None:
+        environ = os.environ
+    if application_factory is None:
+        application_factory = create_mock_application
+    if signal_handler_installer is None:
+        signal_handler_installer = _install_signal_handlers
+    if signal_handler_restorer is None:
+        signal_handler_restorer = _restore_signal_handlers
+
     try:
+        mouth_led_settings = load_mouth_led_backend_settings(environ)
+        if _requires_sota_process_lock(mouth_led_settings):
+            if process_lock_factory is None:
+                process_lock_factory = _create_default_process_lock
+            process_lock = process_lock_factory()
+            process_lock.acquire()
+            process_lock_acquired = True
         config = MockApplicationConfig(
             host=arguments.host,
             port=arguments.port,
@@ -629,28 +732,56 @@ def main(argv=None):
             client_timeout_seconds=arguments.client_timeout,
             profile=arguments.profile,
             wav_timeout_seconds=arguments.wav_timeout,
-            mouth_led_settings=load_mouth_led_backend_settings(os.environ),
+            mouth_led_settings=mouth_led_settings,
         )
-        application = create_mock_application(config)
-        previous_handlers = _install_signal_handlers(stop_requested)
+        application = application_factory(config)
+        previous_handlers = signal_handler_installer(stop_requested)
         application.run()
-        return 0
-    except (KeyboardInterrupt, _SignalShutdown):
-        return 0
-    except Exception as error:
-        if stop_requested.is_set():
-            return 0
-        logger.error(
-            "Mock server failed error_type=%s",
-            type(error).__name__,
-        )
-        return 1
+    except BaseException as error:
+        operation_error = error
     finally:
+        stop_was_requested = stop_requested.is_set()
         stop_requested.set()
         if application is not None:
-            application.shutdown()
+            try:
+                application.shutdown()
+            except BaseException as error:
+                cleanup_errors.append(("application_shutdown", error))
         if previous_handlers:
-            _restore_signal_handlers(previous_handlers)
+            try:
+                signal_handler_restorer(previous_handlers)
+            except BaseException as error:
+                cleanup_errors.append(("signal_restore", error))
+        if process_lock_acquired:
+            try:
+                process_lock.close()
+            except BaseException as error:
+                lock_cleanup_error = error
+
+    lifecycle_error = _combine_lifecycle_errors(
+        operation_error, cleanup_errors
+    )
+    if lock_cleanup_error is not None:
+        if lifecycle_error is None:
+            lifecycle_error = lock_cleanup_error
+        else:
+            lifecycle_error = ProcessLockContextCleanupError(
+                lifecycle_error, lock_cleanup_error
+            )
+    if lifecycle_error is None:
+        return 0
+    clean_stop = (
+        isinstance(operation_error, (KeyboardInterrupt, _SignalShutdown))
+        or (operation_error is not None and stop_was_requested)
+    )
+    if clean_stop and not cleanup_errors and lock_cleanup_error is None:
+        return 0
+    logger.error(
+        "Mock server failed error_type=%s error_types=%s",
+        type(lifecycle_error).__name__,
+        ",".join(_collect_error_type_names(lifecycle_error)),
+    )
+    return 1
 
 
 if __name__ == "__main__":

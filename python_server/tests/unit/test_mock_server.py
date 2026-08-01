@@ -26,6 +26,10 @@ from robot_controller.mock_server import (
 from robot_controller.motion_scheduler import MotionSchedulingCommandTarget
 from robot_controller.models import IdleMotionSettings, Motion, Pose
 from robot_controller.profiles import create_mock_robot_profile
+from robot_controller.process_lock import (
+    ProcessLockReleaseError,
+    ProcessLockUnavailableError,
+)
 from robot_controller.protocol.legacy_v1 import LegacyV1Timeouts
 from robot_controller.router import CommandRouter
 from robot_controller.tcp_server import LegacyV1TcpServer
@@ -806,3 +810,406 @@ def test_signal_handler_does_not_call_application_shutdown_or_join(
     with pytest.raises(module._SignalShutdown):
         installed[signal.SIGINT](signal.SIGINT, None)
     assert stop_requested.is_set()
+
+
+class FakeProcessLock(object):
+    """Event-recording process lock for production lifecycle tests."""
+
+    def __init__(self, events, acquire_error=None, close_error=None):
+        self.events = events
+        self.acquire_error = acquire_error
+        self.close_error = close_error
+        self.acquire_calls = 0
+        self.close_calls = 0
+        self.is_acquired = False
+
+    def acquire(self):
+        self.events.append("process lock acquired")
+        self.acquire_calls += 1
+        if self.acquire_error is not None:
+            raise self.acquire_error
+        self.is_acquired = True
+        return self
+
+    def close(self):
+        self.events.append("process lock closed")
+        self.close_calls += 1
+        self.is_acquired = False
+        if self.close_error is not None:
+            raise self.close_error
+
+
+class LifecycleApplication(object):
+    """Application double that verifies lock ownership during cleanup."""
+
+    def __init__(
+        self,
+        events,
+        process_lock=None,
+        run_error=None,
+        shutdown_error=None,
+    ):
+        self.events = events
+        self.process_lock = process_lock
+        self.run_error = run_error
+        self.shutdown_error = shutdown_error
+        self.run_calls = 0
+        self.shutdown_calls = 0
+
+    def run(self):
+        self.events.append("application run")
+        self.run_calls += 1
+        if self.process_lock is not None:
+            assert self.process_lock.is_acquired is True
+        if self.run_error is not None:
+            raise self.run_error
+
+    def shutdown(self):
+        self.events.append("application shutdown")
+        self.shutdown_calls += 1
+        if self.process_lock is not None:
+            assert self.process_lock.is_acquired is True
+        if self.shutdown_error is not None:
+            raise self.shutdown_error
+
+
+class EventEnvironment(dict):
+    """Record the first settings read from an injected environment."""
+
+    def __init__(self, events, values):
+        dict.__init__(self, values)
+        self.events = events
+        self.recorded = False
+
+    def get(self, key, default=None):
+        if not self.recorded:
+            self.events.append("settings loaded")
+            self.recorded = True
+        return dict.get(self, key, default)
+
+
+def _live_sota_environment(events=None):
+    values = {
+        "ROBOT_MOUTH_LED_BACKEND": "sota_vsmd",
+        "ROBOT_HARDWARE_LIVE_WRITE_ENABLED": "true",
+    }
+    if events is None:
+        return values
+    return EventEnvironment(events, values)
+
+
+def _lifecycle_dependencies(
+    events,
+    process_lock,
+    application,
+    restore_error=None,
+):
+    calls = {"lock_factory": 0, "application_factory": 0, "install": 0}
+
+    def process_lock_factory():
+        events.append("process lock object created")
+        calls["lock_factory"] += 1
+        return process_lock
+
+    def application_factory(config):
+        events.append("application created")
+        calls["application_factory"] += 1
+        return application
+
+    def install(stop_requested):
+        events.append("signal handlers installed")
+        calls["install"] += 1
+        return {signal.SIGINT: signal.SIG_DFL}
+
+    def restore(previous_handlers):
+        events.append("signal handlers restored")
+        if restore_error is not None:
+            raise restore_error
+
+    return calls, {
+        "process_lock_factory": process_lock_factory,
+        "application_factory": application_factory,
+        "signal_handler_installer": install,
+        "signal_handler_restorer": restore,
+    }
+
+
+@pytest.mark.parametrize(
+    "environment",
+    [
+        {},
+        {"ROBOT_MOUTH_LED_BACKEND": "mock"},
+        {
+            "ROBOT_MOUTH_LED_BACKEND": "sota_vsmd",
+            "ROBOT_HARDWARE_LIVE_WRITE_ENABLED": "false",
+        },
+    ],
+)
+def test_main_does_not_create_process_lock_without_live_sota_double_opt_in(
+    environment,
+):
+    application = LifecycleApplication([])
+    lock_factory_calls = []
+
+    result = main(
+        [],
+        environ=environment,
+        process_lock_factory=lambda: lock_factory_calls.append(True),
+        application_factory=lambda config: application,
+        signal_handler_installer=lambda stop_requested: {},
+        signal_handler_restorer=lambda previous: None,
+    )
+
+    assert result == 0
+    assert lock_factory_calls == []
+    assert application.run_calls == 1
+    assert application.shutdown_calls == 1
+
+
+def test_live_sota_lock_surrounds_application_and_signal_lifecycle():
+    events = []
+    process_lock = FakeProcessLock(events)
+    application = LifecycleApplication(events, process_lock=process_lock)
+    calls, dependencies = _lifecycle_dependencies(
+        events, process_lock, application
+    )
+
+    result = main(
+        [], environ=_live_sota_environment(events), **dependencies
+    )
+
+    assert result == 0
+    assert events == [
+        "settings loaded",
+        "process lock object created",
+        "process lock acquired",
+        "application created",
+        "signal handlers installed",
+        "application run",
+        "application shutdown",
+        "signal handlers restored",
+        "process lock closed",
+    ]
+    assert calls == {
+        "lock_factory": 1,
+        "application_factory": 1,
+        "install": 1,
+    }
+    assert process_lock.close_calls == 1
+
+
+def test_process_lock_contention_stops_before_application_or_signals(caplog):
+    events = []
+    process_lock = FakeProcessLock(
+        events,
+        acquire_error=ProcessLockUnavailableError("held"),
+    )
+    application = LifecycleApplication(events)
+    calls, dependencies = _lifecycle_dependencies(
+        events, process_lock, application
+    )
+
+    with caplog.at_level(logging.ERROR, logger="robot_controller.mock_server"):
+        result = main([], environ=_live_sota_environment(), **dependencies)
+
+    assert result == 1
+    assert events == [
+        "process lock object created",
+        "process lock acquired",
+    ]
+    assert process_lock.acquire_calls == 1
+    assert process_lock.close_calls == 0
+    assert calls == {
+        "lock_factory": 1,
+        "application_factory": 0,
+        "install": 0,
+    }
+    assert "ProcessLockUnavailableError" in caplog.text
+
+
+def test_application_creation_failure_closes_acquired_lock_once():
+    events = []
+    process_lock = FakeProcessLock(events)
+
+    def fail_application_creation(config):
+        events.append("application created")
+        raise RuntimeError("creation failed")
+
+    result = main(
+        [],
+        environ=_live_sota_environment(),
+        process_lock_factory=lambda: (
+            events.append("process lock object created") or process_lock
+        ),
+        application_factory=fail_application_creation,
+        signal_handler_installer=lambda stop_requested: events.append(
+            "signal handlers installed"
+        ),
+    )
+
+    assert result == 1
+    assert events == [
+        "process lock object created",
+        "process lock acquired",
+        "application created",
+        "process lock closed",
+    ]
+    assert process_lock.close_calls == 1
+
+
+def test_signal_handler_install_failure_shuts_down_and_closes_lock():
+    events = []
+    process_lock = FakeProcessLock(events)
+    application = LifecycleApplication(events, process_lock=process_lock)
+
+    def fail_install(stop_requested):
+        events.append("signal handlers installed")
+        raise RuntimeError("signal install failed")
+
+    result = main(
+        [],
+        environ=_live_sota_environment(),
+        process_lock_factory=lambda: (
+            events.append("process lock object created") or process_lock
+        ),
+        application_factory=lambda config: (
+            events.append("application created") or application
+        ),
+        signal_handler_installer=fail_install,
+        signal_handler_restorer=lambda previous: events.append(
+            "signal handlers restored"
+        ),
+    )
+
+    assert result == 1
+    assert events == [
+        "process lock object created",
+        "process lock acquired",
+        "application created",
+        "signal handlers installed",
+        "application shutdown",
+        "process lock closed",
+    ]
+    assert application.run_calls == 0
+    assert application.shutdown_calls == 1
+    assert process_lock.close_calls == 1
+
+
+@pytest.mark.parametrize(
+    "run_error",
+    [KeyboardInterrupt(), None],
+    ids=["keyboard-interrupt", "signal-shutdown"],
+)
+def test_interrupts_shutdown_restore_and_close_in_order(run_error):
+    import robot_controller.mock_server as module
+
+    events = []
+    process_lock = FakeProcessLock(events)
+    if run_error is None:
+        run_error = module._SignalShutdown()
+    application = LifecycleApplication(
+        events, process_lock=process_lock, run_error=run_error
+    )
+    unused_calls, dependencies = _lifecycle_dependencies(
+        events, process_lock, application
+    )
+
+    assert main([], environ=_live_sota_environment(), **dependencies) == 0
+    assert events[-3:] == [
+        "application shutdown",
+        "signal handlers restored",
+        "process lock closed",
+    ]
+
+
+def test_run_failure_attempts_all_cleanup_and_returns_failure():
+    events = []
+    process_lock = FakeProcessLock(events)
+    application = LifecycleApplication(
+        events,
+        process_lock=process_lock,
+        run_error=RuntimeError("run failed"),
+    )
+    unused_calls, dependencies = _lifecycle_dependencies(
+        events, process_lock, application
+    )
+
+    assert main([], environ=_live_sota_environment(), **dependencies) == 1
+    assert events[-3:] == [
+        "application shutdown",
+        "signal handlers restored",
+        "process lock closed",
+    ]
+
+
+@pytest.mark.parametrize("failure_phase", ["shutdown", "restore"])
+def test_cleanup_failure_still_closes_process_lock(failure_phase):
+    events = []
+    process_lock = FakeProcessLock(events)
+    shutdown_error = (
+        RuntimeError("shutdown failed")
+        if failure_phase == "shutdown"
+        else None
+    )
+    restore_error = (
+        RuntimeError("restore failed")
+        if failure_phase == "restore"
+        else None
+    )
+    application = LifecycleApplication(
+        events,
+        process_lock=process_lock,
+        shutdown_error=shutdown_error,
+    )
+    unused_calls, dependencies = _lifecycle_dependencies(
+        events,
+        process_lock,
+        application,
+        restore_error=restore_error,
+    )
+
+    assert main([], environ=_live_sota_environment(), **dependencies) == 1
+    assert events[-3:] == [
+        "application shutdown",
+        "signal handlers restored",
+        "process lock closed",
+    ]
+    assert process_lock.close_calls == 1
+
+
+def test_lock_close_failure_changes_success_to_failure(caplog):
+    events = []
+    release_error = ProcessLockReleaseError(OSError("unlock"), None)
+    process_lock = FakeProcessLock(events, close_error=release_error)
+    application = LifecycleApplication(events, process_lock=process_lock)
+    unused_calls, dependencies = _lifecycle_dependencies(
+        events, process_lock, application
+    )
+
+    with caplog.at_level(logging.ERROR, logger="robot_controller.mock_server"):
+        result = main([], environ=_live_sota_environment(), **dependencies)
+
+    assert result == 1
+    assert process_lock.close_calls == 1
+    assert "ProcessLockReleaseError" in caplog.text
+
+
+def test_run_and_lock_cleanup_error_types_are_both_logged(caplog):
+    events = []
+    release_error = ProcessLockReleaseError(OSError("unlock"), None)
+    process_lock = FakeProcessLock(events, close_error=release_error)
+    application = LifecycleApplication(
+        events,
+        process_lock=process_lock,
+        run_error=RuntimeError("run failed"),
+    )
+    unused_calls, dependencies = _lifecycle_dependencies(
+        events, process_lock, application
+    )
+
+    with caplog.at_level(logging.ERROR, logger="robot_controller.mock_server"):
+        result = main([], environ=_live_sota_environment(), **dependencies)
+
+    assert result == 1
+    assert "RuntimeError" in caplog.text
+    assert "ProcessLockReleaseError" in caplog.text
