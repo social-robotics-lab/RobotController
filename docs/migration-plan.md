@@ -250,12 +250,16 @@ lock取得を`VsmdLedLockUnavailableError`で拒否し、memory writeを行わ�
 * [x] `MasterCtrlPeriod`によるcontrol ticks変換を実装しFakeで検証
 * [x] TCP 6498 read-only mouth LED observerをFakeで検証
 * [x] 非原子的逐次observation、事前Output正規化、emergency fade-downをFakeで検証
-* [ ] lock競合、non-LIFO、異常終了時の安全な回復手順
-* [ ] `UnavailableVsmdLedLock`からproduction candidateへの切替
+* [x] AppManager same-LED competition semanticsを実機で観測
+* [x] whole-Sota kernel-backed process lockと競合時fail-closedを実装
+* [x] production live Sota startupとdirect-live diagnosticsをprocess lockでguard
+* [x] Linux subprocessで競合、正常close後、`SIGKILL`後の再取得を検証
+* [x] Fake fault recovery testとoperator recovery手順を完了
+* [x] `UnavailableVsmdLedLock`からproduction candidateへの切替
 * [x] operatorがPython経路による物理mouth LED点灯を確認
 * [x] bounded rise/hold/fall全体を実機で完了
 * [x] probe終了時の安全なOutput 0を実機で確認
-* [ ] Composition Root統合とproduction実機LED write
+* [x] mouth LED Composition Root統合とproduction実機LED write
 
 2026-07-29のcontrol-ticks修正版live試験ではoperatorが物理LED点灯を確認した。
 ただし逐次readのOutput 13 / RemainingTime 0を原子的状態と誤認してrise失敗とし、
@@ -306,6 +310,10 @@ modeは将来課題である。
 * 通常、例外、割込みでselectorとTargetが復元される。
 * productionにlock迂回経路が存在しない。
 * 人間による低輝度・短時間試験でgolden behaviorを再確認している。
+* AppManagerのsame-LED competition semanticsが観測・記録されている。
+* live Sota write processがwhole-Sota process lockへ参加し、競合時にBackend／server／transport生成前にfail-closedする。
+* direct-live diagnosticが同じguardへ参加し、read-only observerは同時実行可能である。
+* Linux subprocessで正常closeおよび`SIGKILL`後のlock回復を確認している。
 
 ## 11. フェーズ8：Sota単一軸制御
 
@@ -738,11 +746,11 @@ composition_root_opt_in = complete
 sota_vsmd_backend_regression_on_hardware = complete
 ```
 
-Remaining Phase 7 and full-target gates:
+Phase and full-target gates:
 
 ```text
-phase7_fault_recovery = pending design correction
-Phase 8 = do not start
+phase7_fault_recovery = complete
+Phase 8 = allowed after this documentation correction is committed and pushed
 full_sota_command_target_integration = pending
 ```
 
@@ -750,10 +758,10 @@ This completes the Python production LED write, the transition from the
 Unavailable lock path to the production candidate for the mouth LED Backend,
 Composition Root integration for that Backend, the production v2 mouth LED
 command, physical confirmation, cleanup, Output-zero restoration, and the
-single UNLOCK. It does not complete corrected cross-process exclusion,
-non-LIFO release,
-abnormal-process recovery, full `VsmdSotaCommandTarget` Composition Root
-integration, or Sota single-axis servo control.
+single UNLOCK. The later whole-Sota process coordination work completes the
+Phase 7 cross-process design correction for cooperating RobotController
+processes. Full `VsmdSotaCommandTarget` Composition Root integration and Sota
+single-axis servo control remain pending.
 
 Detailed production-command evidence:
 [`evidence/mouth-led-production-command-visual-confirmation-2026-07-30.md`](evidence/mouth-led-production-command-visual-confirmation-2026-07-30.md)
@@ -801,21 +809,54 @@ python -m robot_controller.diagnostics.mouth_led_fault_recovery_smoke
 一致した410 packetsは既存process由来の定常通信が混入した可能性があるものの、
 probeへの帰属を断定できない。probeの再実行は不要である。
 
-暫定運用条件として、1つのRobotController processだけがmouth LED 14を制御し、
-複数processは同じSota LED IDを制御してはならない。別調停機構の設計・検証前に
-Phase 8を開始しない。
+AppManagerの`INTERP_LOCK`は補間timer lease／slotの割当てであり、LED ID単位の
+cross-process mutexではない。同一adapter instanceの重複拒否はlocal behaviorとして
+維持する。協調RobotController process間の排他は、Sota 1台全体を粒度とする
+`FcntlProcessLock`で提供する。
+
+既定pathは`/run/lock/robot-controller-sota.lock`で、`os.open(...,
+os.O_RDWR | os.O_CREAT, 0640)`後に`flock(LOCK_EX | LOCK_NB)`を取得する。1 objectの
+取得試行は1回、`close()`は冪等であり、通常終了時にpathnameをunlinkしない。
+production serverはlive Sota double opt-in時だけ、設定validation後かつApplication、
+Backend、server socket、AppManager／VSMD transport生成前に取得する。競合時は
+`ProcessLockUnavailableError`で即時fail-closedし、retryしない。
+
+`mouth_led_backend_smoke`、`app_manager_mouth_led_probe`、
+`app_manager_lock_competition_probe`、`app_manager_probe`のdirect-live経路も同じ
+guardへ参加する。`mouth_led_observer`、Fake-only diagnostics、TCP 22222へ送る
+`mouth_led_command_client`、socketを生成しないdry-runはguard対象外である。
+
+Edison preflightではCPython 3.6.15の`fcntl`／`flock`、`/run/lock`の存在とwrite、
+最初の非blocking exclusive lock取得、独立openによる2件目のEACCES／EAGAIN拒否、
+cleanup、exit code 0を確認した。このpreflightはAppManager、VSMD、LED、device fileへ
+接続していない。Linux WSL 2（Python 3.14.4、pytest 9.1.1）ではprocess lock
+integration 3件、unit 17件、combined 20件、full suite 1101件（2 skipped）が成功し、
+holder中の即時拒否、正常close後と`SIGKILL`後の再取得、pathname残存時の再取得を
+確認した。Windows full suiteは1100 passed、3 skippedで、Linux専用process lock
+integration 3件がskip対象である。Python 3.6 grammar parseはsrc／test 104 files、
+`compileall -q src`も成功している。
+
+このlockはadvisoryである。guardを使用しない外部program、TCP 6495／6498へ直接
+接続するprogram、別pathnameを使用するprogramは防止しない。Sotaへwriteする
+RobotController processとlive diagnosticを同じguardへ参加させ、外部clientは原則
+TCP 22222のguard済みproduction serverを経由させる。
 
 ```text
 phase7_fault_recovery_in_code = complete
 phase7_fault_recovery_fake_regression = complete
-lock-only competition probe = completed_with_unexpected_semantics
-cross-process LED exclusion = not provided by SotaAppManager
-phase7_fault_recovery = pending design correction
-Phase 8 = do not start
+lock-only competition probe = completed_with_observed_slot_allocation
+cross-process LED exclusion = provided for cooperating RobotController processes by whole-Sota FcntlProcessLock
+SotaAppManager LED-ID-exclusive arbitration = not provided
+phase7_fault_recovery = complete
+Phase 8 = allowed after this documentation correction is committed and pushed
 
 phase7_mouth_led_golden_path = complete
 production_command_integration = complete
 full_sota_command_target_integration = pending
 ```
 
-`phase7_fault_recovery`はcross-process排他設計を修正して検証するまでpendingとする。
+未確認事項は、actual `FcntlProcessLock` classの最新revisionをEdisonへ再配備する
+acceptance smoke、Linux CPython 3.6.15でのsubprocess integration、非協調外部program
+への排他、competition probe時のphysical illumination、AppManager内部timer allocation
+algorithm、VSMD trafficのprocess-level attributionである。これらはfuture operational
+acceptance／deployment checklistとして追跡し、Phase 7完了のblocking issueとはしない。

@@ -752,13 +752,13 @@ default.
 
 This result completes only the production mouth LED command path. The full
 legacy-v1-facing `VsmdSotaCommandTarget` is not integrated into the
-Composition Root. The 2026-07-31 lock competition result showed that the next
-design gate requires cross-process exclusion correction in addition to
-non-LIFO release and abnormal-process recovery:
+Composition Root. The 2026-07-31 lock competition result required a separate
+cross-process coordination design. That correction is now implemented for
+cooperating RobotController processes as a whole-Sota `FcntlProcessLock`:
 
 ```text
-phase7_fault_recovery = pending design correction
-Phase 8 = do not start
+phase7_fault_recovery = complete
+Phase 8 = allowed after this documentation correction is committed and pushed
 full_sota_command_target_integration = pending
 ```
 
@@ -799,16 +799,54 @@ protocolは変更しない。
 
 実機結果の詳細、PCAPの帰属制約、証拠hashは
 [`evidence/app-manager-lock-competition-20260731.md`](evidence/app-manager-lock-competition-20260731.md)
-へ記録した。別process間で同じSota LED IDを制御してはならない。単一command server、
-broker、Unix domain socket、OS lockfile等の別調停機構が設計・検証されるまで、
-AppManagerのleaseをcross-process mutexとして扱わない。
+へ記録した。AとBのtimer address 502／504は当該runで別の有効slotが返った観測値に
+限り、固定address、allocator algorithm、slot reuse policyを意味しない。AppManagerの
+leaseをcross-process mutexとして扱わない。
+
+協調RobotController process間の調停は`robot_controller.process_lock.ProcessLock`と
+`robot_controller.posix_process_lock.FcntlProcessLock`が担う。既定pathは
+`/run/lock/robot-controller-sota.lock`、粒度はSota 1台全体である。
+
+```text
+os.open(path, os.O_RDWR | os.O_CREAT, 0640)
+fcntl.flock(fd, LOCK_EX | LOCK_NB)
+```
+
+object lifecycleは`new -> acquired -> closed`で、取得試行は1回、`close()`は冪等で
+ある。取得後はfdをprocess lifecycle中保持する。通常終了時にpathnameをunlinkしない。
+保持中にunlinkすると、別processが同じpathnameへ別inodeを作って独立したlockを
+取得できるためである。crash、`SIGKILL`、電源断ではkernelによるfd closeで解放する。
+
+productionの`python -m robot_controller.mock_server`は
+`ROBOT_MOUTH_LED_BACKEND=sota_vsmd`かつ
+`ROBOT_HARDWARE_LIVE_WRITE_ENABLED=true`のときだけ、設定validation後、Application、
+Backend、server socket、AppManager／VSMD transport生成前にlockを取得する。競合は
+`ProcessLockUnavailableError`で即時fail-closedし、retry、sleep、blocking waitを
+行わない。終了順はapplication shutdown、signal restoration、process lock closeである。
+
+`mouth_led_backend_smoke`、`app_manager_mouth_led_probe`、
+`app_manager_lock_competition_probe`、`app_manager_probe`のdirect-live経路も同じguardを
+使用する。`mouth_led_observer`、Fake-only diagnostics、TCP 22222 client、socketなし
+dry-runは対象外であり、read-only observerとproduction serverの同時実行を維持する。
+
+Edison CPython 3.6.15 preflightで`fcntl`／`flock`、`/run/lock`のwrite、最初の取得、
+独立openの拒否、cleanupを確認した。Linux WSL 2ではsubprocess integration 3件と
+unit 17件が成功し、holder中の即時拒否、正常close後と`SIGKILL`後の再取得、pathname
+残存時の再取得を確認した。Linux full suiteは1101 passed、2 skipped、Windows full
+suiteは1100 passed、3 skippedである。Python 3.6 grammar parseはsrc／test 104 files、
+`compileall -q src`も成功している。
+
+このlockはadvisoryであり、guardを使わない外部program、TCP 6495／6498への直接
+接続、別pathnameのprocessを防止しない。これらには運用統制が必要であり、外部clientは
+原則TCP 22222のguard済みserverを経由する。
 
 ```text
 phase7_fault_recovery_in_code = complete
 phase7_fault_recovery_fake_regression = complete
-lock-only competition probe = completed_with_unexpected_semantics
-cross-process LED exclusion = not provided by SotaAppManager
-phase7_fault_recovery = pending design correction
-Phase 8 = do not start
+lock-only competition probe = completed_with_observed_slot_allocation
+cross-process LED exclusion = provided for cooperating RobotController processes by whole-Sota FcntlProcessLock
+SotaAppManager LED-ID-exclusive arbitration = not provided
+phase7_fault_recovery = complete
+Phase 8 = allowed after this documentation correction is committed and pushed
 full_sota_command_target_integration = pending
 ```

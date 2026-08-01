@@ -980,19 +980,42 @@ limitation, read-only post-state, and external evidence hashes are recorded in
 [`evidence/app-manager-lock-competition-20260731.md`](evidence/app-manager-lock-competition-20260731.md).
 The remote test did not observe physical illumination. `INTERP_LOCK` must be
 treated as an interpolation timer lease/slot allocation mechanism, not a
-cross-process mutex. Until a separate coordinator is designed and verified,
-multiple RobotController processes must not control the same Sota LED IDs.
+cross-process mutex. The observed timer addresses 502 and 504 show only that
+the two keys received different valid slots in that run; they are not fixed
+addresses or a guarantee about AppManager's allocator or slot reuse policy.
+
+OS process coordination is separate from legacy v1 TCP framing, AppManager
+command compatibility, and VSMD memory-access compatibility. Cooperating
+RobotController processes use the whole-Sota
+`robot_controller.posix_process_lock.FcntlProcessLock`, with default path
+`/run/lock/robot-controller-sota.lock`. It uses nonblocking kernel `flock` and
+does not add a TCP field, command, response, or connection to either v1 or v2.
+The compatibility API names `AppManagerLedLock` and `AppManagerVsmdLedLock`
+remain unchanged, but the word `Lock` in those names is not evidence of
+cross-process arbitration.
+
+The production server acquires the process lock only for the live Sota double
+opt-in and does so before constructing the application, Backend, listen socket,
+or AppManager/VSMD transport. Direct-live diagnostics use the same guard;
+read-only and Fake-only paths do not. Contention fails immediately without
+retry. This advisory lock coordinates only participants using the same
+pathname and cannot exclude direct TCP 6495/6498 clients or other
+non-cooperating programs.
 
 ```text
 phase7_fault_recovery_in_code = complete
 phase7_fault_recovery_fake_regression = complete
-lock-only competition probe = completed_with_unexpected_semantics
-cross-process LED exclusion = not provided by SotaAppManager
-phase7_fault_recovery = pending design correction
-Phase 8 = do not start
+lock-only competition probe = completed_with_observed_slot_allocation
+cross-process LED exclusion = provided for cooperating RobotController processes by whole-Sota FcntlProcessLock
+SotaAppManager LED-ID-exclusive arbitration = not provided
+phase7_fault_recovery = complete
+Phase 8 = allowed after this documentation correction is committed and pushed
 full_sota_command_target_integration = pending
 ```
 
-The probe need not be rerun to establish the observed semantics. The pending
-gate now requires a cross-process exclusion design correction and separate
-verification. The verified production mouth LED normal path remains unchanged.
+The probe need not be rerun to establish the observed semantics. The separate
+whole-Sota design correction has unit, production-startup, diagnostic, Edison
+preflight, and Linux subprocess evidence. It does not claim enforcement over
+non-cooperating processes or alter the verified production mouth LED normal
+path. Phase 8 may begin after this documentation correction is committed and
+pushed.

@@ -61,6 +61,20 @@ Robot Backend
 Mock      Sota      CommU       Dog
 ```
 
+live Sota write経路には、protocol framingとは独立したOS-level process coordinationを置く。
+
+```text
+External command client
+    -> Legacy V1 / V2 TCP server 22222
+    -> RobotController application
+    -> whole-Sota FcntlProcessLock ownership
+    -> Sota Backend
+    +-> AppManager TCP 6495 (interpolation timer lease / slot)
+    `-> VSMD TCP 6498 (validated memory access)
+```
+
+`FcntlProcessLock`は協調RobotController process間でSota 1台全体を所有するためのadvisory lockである。AppManager leaseは補間timer資源の割当てであり、このprocess lockと同じ概念ではない。
+
 ## 4. 推奨ディレクトリ構成
 
 ```text
@@ -542,13 +556,26 @@ read responseは`#0124 8a 00 \r\n`のように最後のbyteとCRLFの間へASCII
 space 1個を含む場合がある。Codecは末尾spaceを0個または1個だけ許可し、
 行頭space、連続space、tab、LF単独、token幅不正は拒否する。
 
-TCP 6495候補は1 request / 1 connection、server-first Java serialization header、
+TCP 6495は1 request / 1 connection、server-first Java serialization header、
 compact ASCII JSON + LF、限定Java response decoder、single-release leaseへ分離する。
-これはまだ実機接続しておらず、現段階では`VsmdSotaCommandTarget`をComposition
-Rootへ接続しない。production既定lockは引き続きwrite前に明示的な例外を送出する。
-lockを迂回するfallback、
-`InterpLEDOutput`への直接write、接続時の`InitRobot()`・`ServoOn()`・初期Pose相当
-は実装しない。
+2026-07-31のcompetition probeでは、異なるkeyのAとBが同じLED ID 14を同時に
+LOCKでき、それぞれ別の有効なtimer slotへCONVERTした。したがってAppManagerは
+interpolation timer lease／slotを割り当てるが、LED-ID-exclusive cross-process
+arbitrationは提供しない。同一`AppManagerVsmdLedLock` instance内の重複拒否はlocal
+adapter behaviorである。
+
+協調process間の排他は`robot_controller.process_lock.ProcessLock`と
+`robot_controller.posix_process_lock.FcntlProcessLock`が担う。既定path
+`/run/lock/robot-controller-sota.lock`を`LOCK_EX | LOCK_NB`で取得し、粒度はSota
+1台全体である。live Sota double opt-in時はApplication、Backend、server socket、
+AppManager／VSMD transportの構築前に取得し、競合時はretryせずfail-closedする。
+lock fileは通常終了時にunlinkしない。crash、`SIGKILL`、電源断ではkernelがfdを
+閉じてlockを解放する。
+
+このlockはadvisoryであり、同じguardを使用しない外部programやTCP 6495／6498への
+直接接続を防止しない。productionでは外部clientを原則TCP 22222のguard済みserverへ
+集約する。lockを迂回するfallback、`InterpLEDOutput`への直接write、接続時の
+`InitRobot()`・`ServoOn()`・初期Pose相当は実装しない。
 
 既存のFutaba UART codec/transport/probeは削除せず、低レベル調査用の
 experimental Backendとして隔離する。`vsmd_edison`が提供する補間、可動域、
@@ -705,13 +732,17 @@ Windowsおよび現在のproduction Composition RootではMockで実行する。
 robot.type = Mock
 ```
 
-将来、VSMD lock protocolと`VsmdSotaCommandTarget`の検証後に限り、
-明示的なexperimental設定でSota Backendを選択可能にする。現時点で次の設定例は
-設計上の予約であり、有効なCLI設定ではない。
+mouth LEDのSota Backendは、次のdouble opt-in時だけproduction serverで選択する。
 
 ```text
-robot.type = Sota
+ROBOT_MOUTH_LED_BACKEND=sota_vsmd
+ROBOT_HARDWARE_LIVE_WRITE_ENABLED=true
 ```
+
+この場合、serverは設定validation後、Application／Backend／listen socketの生成前に
+whole-Sota process lockを取得する。競合時は起動を継続しない。Mock、Unavailable、
+live write無効の経路はlockもlive transportも生成しない。full
+`VsmdSotaCommandTarget`とSota単一軸制御は別の未完了gateである。
 
 実機への配布物は、可能であれば次を含む。
 

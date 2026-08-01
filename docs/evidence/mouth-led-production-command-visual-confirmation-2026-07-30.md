@@ -139,12 +139,18 @@ production_command_integration = complete
 phase7_mouth_led_golden_path = complete
 ```
 
-The following gates remain pending:
+The Phase 7 gate state at the time of this run and after the later design
+correction is:
 
 ```text
-phase7_fault_recovery = pending
+phase7_fault_recovery_at_time_of_this_run = pending
+phase7_fault_recovery_current = complete
 full_sota_command_target_integration = pending
 ```
+
+Phase 7 was completed later by the AppManager semantics correction and the
+whole-Sota `FcntlProcessLock` implementation and verification. That later work
+does not change this document's 2026-07-30 observations.
 
 ## 7. Scope limitations
 

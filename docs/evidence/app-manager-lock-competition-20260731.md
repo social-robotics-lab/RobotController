@@ -228,29 +228,41 @@ provides cross-process exclusion.
 
 ## Operational and gate impact
 
-Until a separate coordination mechanism is designed and verified:
+This run established the AppManager semantics. A later Phase 7 design
+correction implemented and verified a separate whole-Sota coordination
+mechanism for cooperating RobotController processes:
 
 ```text
-Only one RobotController process may control mouth LED 14.
-Multiple RobotController processes must not control the same Sota LED IDs.
+robot_controller.process_lock.ProcessLock
+robot_controller.posix_process_lock.FcntlProcessLock
+default path: /run/lock/robot-controller-sota.lock
+scope: whole Sota robot
 ```
 
 Local overlap rejection inside one `AppManagerVsmdLedLock` instance remains
-valid, but it does not protect separate instances or processes. A future
-cross-process design may use a single command server, dedicated broker, Unix
-domain socket coordinator, or OS lockfile; no mechanism is selected or
-implemented by this documentation change.
+valid, but it does not protect separate instances or processes. AppManager
+continues to allocate interpolation timer leases or slots; it does not provide
+LED-ID-exclusive cross-process arbitration. `FcntlProcessLock` supplies
+nonblocking advisory exclusion for cooperating RobotController processes and
+is not an AppManager or wire-protocol feature.
+
+The production live Sota double-opt-in path acquires the process lock before
+constructing the application, Backend, server socket, or AppManager/VSMD
+transport. Direct-live diagnostics use the same guard. Read-only observation
+does not acquire it. The lock cannot stop non-cooperating programs or direct
+TCP 6495/6498 clients.
 
 ```text
-lock-only competition probe: completed_with_unexpected_semantics
-cross-process LED exclusion: not provided by SotaAppManager
-phase7_fault_recovery: pending design correction
-Phase 8: do not start
+lock-only competition probe: completed_with_observed_slot_allocation
+cross-process LED exclusion: provided for cooperating RobotController processes by whole-Sota FcntlProcessLock
+SotaAppManager LED-ID-exclusive arbitration: not provided
+phase7_fault_recovery: complete
+Phase 8: allowed after this documentation correction is committed and pushed
 ```
 
-The probe does not need to be rerun to establish this result. Phase 8 must not
-start on the assumption that AppManager arbitrates multiple RobotController
-processes.
+The probe does not need to be rerun. Phase 8 must not assume that AppManager
+arbitrates multiple RobotController processes; it may proceed only after this
+documentation correction is committed and pushed.
 
 ## External evidence inventory
 

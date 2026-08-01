@@ -256,6 +256,16 @@ TCPフレーム処理とコマンドルーターの変更を必須としない�
 
 未確認の値を推測してはならない。完全なcommit SHAを確認できない場合はTODOとして残し、根拠を確認できるまで実機ドライバへ使用しない。
 
+### FR-018 Sota process coordination
+
+live Sotaへwriteするproduction processおよびdirect-live diagnosticは、whole-Sotaのkernel-backed advisory lockを取得しなければならない。既定実装は`FcntlProcessLock`、既定pathは`/run/lock/robot-controller-sota.lock`とする。粒度はLED ID、Backend、socketではなくSota 1台全体とする。
+
+production serverは`ROBOT_MOUTH_LED_BACKEND=sota_vsmd`かつ`ROBOT_HARDWARE_LIVE_WRITE_ENABLED=true`のdouble opt-in時だけlockを取得する。取得順は設定のload／validation、process lock、Application／Backend／server構築の順とする。取得失敗時は自動retry、sleep、blocking waitを行わず、hardware、Backend、server socket、AppManager transport、VSMD transportを生成する前にfail-closedする。
+
+lockは取得したfile descriptorをprocess lifecycle中保持し、通常終了時にcloseする。lock pathnameは通常終了時にunlinkしない。保持中のpathnameをunlinkすると、別processが同じpathnameへ別inodeを作成して独立したlockを取得できるためである。read-only diagnosticはguard対象外とする。
+
+このlockは同じguardを使用する協調RobotController process間だけを調停する。guardを使用しない外部program、AppManager TCP 6495またはVSMD TCP 6498へ直接接続するprogram、別pathnameを使用するprogramは防止しないため、別の運用統制を必要とする。
+
 ## 7. コマンド競合要件
 
 ### FR-020 単一の動作所有者
@@ -474,6 +484,14 @@ Windows上で実機なしに主要機能の自動テストが完了する。
 * stop
 * WAV
 * Idle Motion
+
+### AC-007 Sota process coordination
+
+* holder保持中の別processは即時に`ProcessLockUnavailableError`となり、holderは保持を継続する。
+* 正常close後およびholderの`SIGKILL`後に、別processが同じpathnameでlockを取得できる。
+* pathnameが残存していても、kernelによるfile descriptor解放後は再取得できる。
+* live Sota production startupとdirect-live diagnosticが同じwhole-Sota guardへ参加する。
+* read-only observerはproduction serverと同時に使用できる。
 
 ## 11. 未確定事項
 

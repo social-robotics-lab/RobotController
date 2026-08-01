@@ -98,6 +98,16 @@
 
 初期版は、バックエンドの初期化が成功して `ready` へ遷移してからTCP listenを開始する。`ready` 前にロボットコマンドを実行できる経路を作らない。
 
+### 4.6 Sota process coordination
+
+* AppManager `INTERP_LOCK`は補間timer lease／slotの割当てであり、LED ID単位のcross-process mutexとは仮定しない。
+* 同一`AppManagerVsmdLedLock` instance内のLED ID重複拒否はlocal adapter behaviorであり、別instanceまたは別processへ一般化しない。
+* Sotaへwriteするproduction processとdirect-live diagnosticは、既定path `/run/lock/robot-controller-sota.lock`のwhole-Sota `FcntlProcessLock`へ参加する。
+* process lock競合時はretry、sleep、blocking waitを行わず、hardware、Backend、server、AppManager transport、VSMD transportの生成前にfail-closedする。
+* lock fileの存在だけをownershipと判断しない。通常終了時もlock fileをunlinkせず、手動unlinkで競合を解消しない。
+* whole-Sota process lockはadvisory lockであり、同じguardへ参加しない外部programを防止するsecurity boundaryとして扱わない。
+* read-only observerとwrite diagnosticを区別し、read-only observerへprocess lock取得を要求しない。
+
 ## 5. 安全に関する禁止事項
 
 Codexを含む自動エージェントは、許可の有無にかかわらず、実機デバイス、`systemctl`、サーボ、LEDおよびトルクを操作してはならない。以下は絶対的な禁止事項である。
@@ -114,8 +124,11 @@ Codexを含む自動エージェントは、許可の有無にかかわらず、
 * 実機上の設定ファイルの変更
 * 実機への自動デプロイ
 * 実機上での自動テスト
+* process lock競合を回避する目的でのservice、AppManager、`vsmd_edison`の停止
+* `/run/lock/robot-controller-sota.lock`の手動unlink
 
 実機用コードを作成する場合もエージェントは実行しない。エージェントが手順を作成し、人間が内容を確認して手動実行すること。
+operatorによる観測記録がないphysical LED状態を推測または断定しない。
 
 ## 6. サーボ安全要件
 
