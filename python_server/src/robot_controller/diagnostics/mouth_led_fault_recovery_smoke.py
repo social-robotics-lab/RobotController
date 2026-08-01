@@ -57,12 +57,11 @@ def _request_parts(request):
     return outer["cmd"], json.loads(outer["subjson"])
 
 
-class _FakeAppManagerArbiter(object):
-    """In-memory cross-client lock arbitration with no I/O."""
+class _FakeAppManagerSlotAllocator(object):
+    """In-memory observed timer-slot allocation with no I/O."""
 
     def __init__(self):
         self._ids_by_key = {}
-        self._key_by_id = {}
         self._timer_by_key = {}
         self._next_timer = LEASE_TIMER_ADDRESS
 
@@ -72,11 +71,7 @@ class _FakeAppManagerArbiter(object):
         key = payload["key"]
         if command == INTERP_LOCK_COMMAND:
             led_ids = tuple(payload["ids"])
-            if any(led_id in self._key_by_id for led_id in led_ids):
-                return SERIALIZED_NG
             self._ids_by_key[key] = led_ids
-            for led_id in led_ids:
-                self._key_by_id[led_id] = key
             self._timer_by_key[key] = self._next_timer
             self._next_timer += 2
             return SERIALIZED_OK
@@ -91,22 +86,20 @@ class _FakeAppManagerArbiter(object):
                 return SERIALIZED_NG
             del self._ids_by_key[key]
             del self._timer_by_key[key]
-            for led_id in led_ids:
-                del self._key_by_id[led_id]
             return SERIALIZED_OK
         raise AssertionError("unexpected fake AppManager command")
 
 
-class _FakeArbitratingTransport(object):
-    def __init__(self, arbiter):
-        self._arbiter = arbiter
+class _FakeSlotTransport(object):
+    def __init__(self, allocator):
+        self._allocator = allocator
         self.requests = []
 
     def request(self, request):
         # type: (bytes) -> bytes
         request = bytes(request)
         self.requests.append(request)
-        return self._arbiter.exchange(request)
+        return self._allocator.exchange(request)
 
 
 class _FakeScriptedTransport(object):
@@ -220,7 +213,7 @@ def _commands(transport):
 
 def _check_same_process_conflict():
     # type: () -> None
-    transport = _FakeArbitratingTransport(_FakeAppManagerArbiter())
+    transport = _FakeSlotTransport(_FakeAppManagerSlotAllocator())
     adapter = _adapter(transport, "same-process-key")
     lease = adapter.acquire("first-local", [LED_ID])
     request_count = len(transport.requests)
@@ -234,30 +227,38 @@ def _check_same_process_conflict():
     lease.release()
 
 
-def _check_cross_client_conflict():
+def _check_cross_client_slot_allocation():
     # type: () -> None
-    arbiter = _FakeAppManagerArbiter()
-    first_transport = _FakeArbitratingTransport(arbiter)
-    second_transport = _FakeArbitratingTransport(arbiter)
+    allocator = _FakeAppManagerSlotAllocator()
+    first_transport = _FakeSlotTransport(allocator)
+    second_transport = _FakeSlotTransport(allocator)
     first = _adapter(first_transport, "cross-client-one")
     second = _adapter(second_transport, "cross-client-two")
     first_lease = first.acquire("first-local", [LED_ID])
+    second_lease = second.acquire("second-local", [LED_ID])
+    assert first_lease.timer_address != second_lease.timer_address
+    second_lease.release()
+    first_lease.release()
+
+
+def _check_explicit_lock_rejection():
+    # type: () -> None
+    transport = _FakeScriptedTransport([SERIALIZED_NG])
+    adapter = _adapter(transport, "explicit-rejection")
     try:
-        second.acquire("second-local", [LED_ID])
+        adapter.acquire("local", [LED_ID])
     except AppManagerLockRejectedError:
         pass
     else:
-        raise AssertionError("cross-client conflict was accepted")
-    assert _commands(second_transport) == [INTERP_LOCK_COMMAND]
-    assert first_lease.state == "active"
-    first_lease.release()
+        raise AssertionError("explicit AppManager NG was accepted")
+    assert _commands(transport) == [INTERP_LOCK_COMMAND]
 
 
 def _check_release_reacquire():
     # type: () -> None
-    arbiter = _FakeAppManagerArbiter()
-    first_transport = _FakeArbitratingTransport(arbiter)
-    second_transport = _FakeArbitratingTransport(arbiter)
+    allocator = _FakeAppManagerSlotAllocator()
+    first_transport = _FakeSlotTransport(allocator)
+    second_transport = _FakeSlotTransport(allocator)
     first = _adapter(first_transport, "release-key-one")
     second = _adapter(second_transport, "release-key-two")
     first_lease = first.acquire("first-local", [LED_ID])
@@ -270,7 +271,7 @@ def _check_release_reacquire():
 
 def _check_idempotent_release():
     # type: () -> None
-    transport = _FakeArbitratingTransport(_FakeAppManagerArbiter())
+    transport = _FakeSlotTransport(_FakeAppManagerSlotAllocator())
     lease = _adapter(
         transport, "idempotent-key"
     ).acquire("local", [LED_ID])
@@ -359,7 +360,11 @@ def main(output=None):
     print("live_write=false", file=output)
     checks = (
         ("same_process_conflict", _check_same_process_conflict),
-        ("cross_client_conflict", _check_cross_client_conflict),
+        (
+            "cross_client_slot_allocation",
+            _check_cross_client_slot_allocation,
+        ),
+        ("explicit_lock_rejection", _check_explicit_lock_rejection),
         ("release_reacquire", _check_release_reacquire),
         ("idempotent_release", _check_idempotent_release),
         ("convert_failure_cleanup", _check_convert_failure_cleanup),

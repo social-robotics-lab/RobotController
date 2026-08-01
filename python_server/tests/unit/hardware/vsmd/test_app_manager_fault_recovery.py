@@ -32,25 +32,26 @@ def _decode_request(request):
     return outer["cmd"], json.loads(outer["subjson"])
 
 
-class FakeAppManagerArbiter(object):
-    """Shared AppManager state used by independent fake clients."""
+class FakeAppManagerSlotAllocator(object):
+    """Observed timer-slot behavior shared by independent fake clients."""
 
-    def __init__(self):
+    def __init__(self, lock_results=None):
         self._ids_by_key = {}
-        self._key_by_id = {}
         self._timer_by_key = {}
         self._next_timer = 502
+        self._lock_results = (
+            {} if lock_results is None else dict(lock_results)
+        )
 
     def exchange(self, request):
         command, payload = _decode_request(request)
         key = payload["key"]
         if command == INTERP_LOCK_COMMAND:
             ids = tuple(payload["ids"])
-            if any(led_id in self._key_by_id for led_id in ids):
-                return SERIALIZED_NG
+            configured = self._lock_results.get(key)
+            if configured is not None:
+                return configured
             self._ids_by_key[key] = ids
-            for led_id in ids:
-                self._key_by_id[led_id] = key
             self._timer_by_key[key] = self._next_timer
             self._next_timer += 2
             return SERIALIZED_OK
@@ -65,25 +66,23 @@ class FakeAppManagerArbiter(object):
                 return SERIALIZED_NG
             del self._ids_by_key[key]
             del self._timer_by_key[key]
-            for led_id in ids:
-                del self._key_by_id[led_id]
             return SERIALIZED_OK
         raise AssertionError("unexpected fake AppManager command")
 
 
-class FakeArbitratingTransport(object):
-    def __init__(self, arbiter):
-        self._arbiter = arbiter
+class FakeSlotTransport(object):
+    def __init__(self, allocator):
+        self._allocator = allocator
         self.requests = []
 
     def request(self, request):
         request = bytes(request)
         self.requests.append(request)
-        return self._arbiter.exchange(request)
+        return self._allocator.exchange(request)
 
 
-def _make_adapter(arbiter, key):
-    transport = FakeArbitratingTransport(arbiter)
+def _make_adapter(allocator, key):
+    transport = FakeSlotTransport(allocator)
     lock = AppManagerLedLock(
         transport=transport, key_factory=lambda: key
     )
@@ -97,8 +96,8 @@ def _commands(transport):
 
 
 def test_same_adapter_overlap_fails_before_second_app_manager_call():
-    arbiter = FakeAppManagerArbiter()
-    adapter, transport = _make_adapter(arbiter, "same-process-key")
+    allocator = FakeAppManagerSlotAllocator()
+    adapter, transport = _make_adapter(allocator, "same-process-key")
     lease = adapter.acquire("first-local", [14])
     request_count = len(transport.requests)
 
@@ -113,28 +112,54 @@ def test_same_adapter_overlap_fails_before_second_app_manager_call():
     lease.release()
 
 
-def test_independent_clients_delegate_conflict_to_app_manager():
-    arbiter = FakeAppManagerArbiter()
-    first, first_transport = _make_adapter(arbiter, "client-one-key")
-    second, second_transport = _make_adapter(arbiter, "client-two-key")
+def test_independent_clients_receive_distinct_slots_for_same_led():
+    allocator = FakeAppManagerSlotAllocator()
+    first, first_transport = _make_adapter(allocator, "client-one-key")
+    second, second_transport = _make_adapter(allocator, "client-two-key")
+    first_lease = first.acquire("first-local", [14])
+    second_lease = second.acquire("second-local", [14])
+
+    assert first_lease.timer_address != second_lease.timer_address
+    second_lease.release()
+    first_lease.release()
+
+    assert _commands(first_transport) == [
+        INTERP_LOCK_COMMAND,
+        INTERP_CONVERT_COMMAND,
+        INTERP_UNLOCK_COMMAND,
+    ]
+    assert _commands(second_transport) == [
+        INTERP_LOCK_COMMAND,
+        INTERP_CONVERT_COMMAND,
+        INTERP_UNLOCK_COMMAND,
+    ]
+
+
+def test_explicit_lock_ng_preserves_typed_rejection():
+    allocator = FakeAppManagerSlotAllocator(
+        {"client-two-key": SERIALIZED_NG}
+    )
+    first, first_transport = _make_adapter(
+        allocator, "client-one-key"
+    )
+    second, second_transport = _make_adapter(
+        allocator, "client-two-key"
+    )
     first_lease = first.acquire("first-local", [14])
 
     with pytest.raises(AppManagerLockRejectedError):
         second.acquire("second-local", [14])
 
-    assert _commands(first_transport) == [
-        INTERP_LOCK_COMMAND,
-        INTERP_CONVERT_COMMAND,
-    ]
     assert _commands(second_transport) == [INTERP_LOCK_COMMAND]
     assert first_lease.state == "active"
     first_lease.release()
+    assert _commands(first_transport)[-1] == INTERP_UNLOCK_COMMAND
 
 
 def test_release_allows_new_client_reacquire_with_distinct_key_and_timer():
-    arbiter = FakeAppManagerArbiter()
-    first, first_transport = _make_adapter(arbiter, "client-one-key")
-    second, second_transport = _make_adapter(arbiter, "client-two-key")
+    allocator = FakeAppManagerSlotAllocator()
+    first, first_transport = _make_adapter(allocator, "client-one-key")
+    second, second_transport = _make_adapter(allocator, "client-two-key")
 
     first_lease = first.acquire("first-local", [14])
     first_lease.release()
@@ -156,8 +181,8 @@ def test_release_allows_new_client_reacquire_with_distinct_key_and_timer():
 
 
 def test_release_is_idempotent_through_shared_fake_arbiter():
-    arbiter = FakeAppManagerArbiter()
-    adapter, transport = _make_adapter(arbiter, "idempotent-key")
+    allocator = FakeAppManagerSlotAllocator()
+    adapter, transport = _make_adapter(allocator, "idempotent-key")
     lease = adapter.acquire("local", [14])
     lease.release()
     lease.release()

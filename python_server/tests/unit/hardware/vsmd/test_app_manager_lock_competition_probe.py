@@ -30,12 +30,12 @@ def _request_parts(request):
     return outer["cmd"], json.loads(outer["subjson"])
 
 
-class FakeAppManagerArbiter(object):
-    """Shared stack state for three independent Fake transports."""
+class FakeAppManagerSlotAllocator(object):
+    """Shared timer-slot state for independent Fake transports."""
 
     def __init__(self, results=None):
         self.results = {} if results is None else dict(results)
-        self.stacks = {}
+        self.keys_by_led_id = {}
         self.timer_by_key = {}
         self.next_timer = 502
         self.events = []
@@ -59,8 +59,6 @@ class FakeAppManagerArbiter(object):
             return configured
 
         if command == INTERP_LOCK_COMMAND:
-            if any(self.stacks.get(led_id) for led_id in led_ids):
-                return SERIALIZED_NG
             self._push(key, led_ids)
             return SERIALIZED_OK
         if command == INTERP_CONVERT_COMMAND:
@@ -79,20 +77,20 @@ class FakeAppManagerArbiter(object):
         self.timer_by_key[key] = self.next_timer
         self.next_timer += 2
         for led_id in led_ids:
-            self.stacks.setdefault(led_id, []).append(key)
+            self.keys_by_led_id.setdefault(led_id, []).append(key)
 
     def _owns(self, key, led_ids):
         return all(
-            self.stacks.get(led_id)
-            and key in self.stacks[led_id]
+            self.keys_by_led_id.get(led_id)
+            and key in self.keys_by_led_id[led_id]
             for led_id in led_ids
         )
 
     def _remove(self, key, led_ids):
         for led_id in led_ids:
-            stack = self.stacks.get(led_id, [])
-            if key in stack:
-                stack.remove(key)
+            keys = self.keys_by_led_id.get(led_id, [])
+            if key in keys:
+                keys.remove(key)
         self.timer_by_key.pop(key, None)
 
 
@@ -116,7 +114,7 @@ class FakeTransportFactory(object):
         self.transports = {}
 
     def __call__(self, **keywords):
-        client_name = ("a", "b", "c")[self.call_count]
+        client_name = ("a", "b")[self.call_count]
         self.call_count += 1
         self.calls.append(dict(keywords))
         transport = FakeTransport(client_name, self.arbiter)
@@ -150,7 +148,7 @@ def _run(factory, arguments=None):
 
 
 def test_confirmation_absent_creates_no_transport():
-    factory = FakeTransportFactory(FakeAppManagerArbiter())
+    factory = FakeTransportFactory(FakeAppManagerSlotAllocator())
     output = io.StringIO()
     error_output = io.StringIO()
 
@@ -171,17 +169,16 @@ def test_confirmation_absent_creates_no_transport():
     assert error_output.getvalue() == ""
 
 
-def test_successful_competition_has_exact_command_counts_and_keys():
-    arbiter = FakeAppManagerArbiter()
-    factory = FakeTransportFactory(arbiter)
+def test_observed_slot_allocation_has_exact_commands_and_distinct_timers():
+    allocator = FakeAppManagerSlotAllocator()
+    factory = FakeTransportFactory(allocator)
 
     status, output, error_output = _run(factory)
 
     assert status == 0
     assert error_output == ""
-    assert factory.call_count == 3
+    assert factory.call_count == 2
     assert factory.calls == [
-        {"host": "127.0.0.1", "port": 6495, "timeout": 2.0},
         {"host": "127.0.0.1", "port": 6495, "timeout": 2.0},
         {"host": "127.0.0.1", "port": 6495, "timeout": 2.0},
     ]
@@ -190,51 +187,59 @@ def test_successful_competition_has_exact_command_counts_and_keys():
         INTERP_CONVERT_COMMAND,
         INTERP_UNLOCK_COMMAND,
     ]
-    assert _commands(factory, "b") == [INTERP_LOCK_COMMAND]
-    assert _commands(factory, "c") == [
+    assert _commands(factory, "b") == [
         INTERP_LOCK_COMMAND,
         INTERP_CONVERT_COMMAND,
         INTERP_UNLOCK_COMMAND,
     ]
-    assert [event[2] for event in arbiter.events] == [
+    assert [event[2] for event in allocator.events] == [
         "phase7-lock-a",
         "phase7-lock-a",
         "phase7-lock-b",
+        "phase7-lock-b",
+        "phase7-lock-b",
         "phase7-lock-a",
-        "phase7-lock-c",
-        "phase7-lock-c",
-        "phase7-lock-c",
     ]
     assert all(
-        not event[3] or event[3] == (14,) for event in arbiter.events
+        not event[3] or event[3] == (14,) for event in allocator.events
     )
     for expected in (
-        "SotaAppManager LED lock competition probe",
+        "SotaAppManager LED timer-slot observation probe",
         "live_network=true",
         "live_lock=true",
         "led_id=14",
         "client_a_key=phase7-lock-a",
         "client_a_lock_acquired=true",
         "client_b_key=phase7-lock-b",
-        "client_b_lock_rejected=true",
-        "client_b_error_type=AppManagerLockRejectedError",
-        "client_b_convert_sent=false",
-        "client_b_unlock_sent=false",
+        "client_b_lock_acquired=true",
+        "timer_addresses_distinct=true",
+        "cross_process_exclusion=false",
+        "client_b_lock_released=true",
         "client_a_lock_released=true",
-        "client_c_key=phase7-lock-c",
-        "client_c_lock_acquired=true",
-        "client_c_lock_released=true",
         "vsmd_transport_created=false",
         "vsmd_read_write=false",
         "automatic_retry=false",
-        "result=success",
+        "result=observed_semantics",
     ):
         assert expected in output
 
+    values = {}
+    for line in output.splitlines():
+        if line.startswith("client_") and "_timer_address=" in line:
+            name, value = line.split("=", 1)
+            values[name] = int(value)
+    assert set(values) == {
+        "client_a_timer_address",
+        "client_b_timer_address",
+    }
+    assert all(496 <= value <= 558 for value in values.values())
+    assert all((value - 496) % 2 == 0 for value in values.values())
+    assert len(set(values.values())) == 2
+
 
 def test_cli_values_and_explicit_key_prefix_are_forwarded():
-    arbiter = FakeAppManagerArbiter()
-    factory = FakeTransportFactory(arbiter)
+    allocator = FakeAppManagerSlotAllocator()
+    factory = FakeTransportFactory(allocator)
 
     status, output, unused_error = _run(
         factory,
@@ -260,9 +265,8 @@ def test_cli_values_and_explicit_key_prefix_are_forwarded():
     assert "led_id=31" in output
     assert "client_a_key=operator-test-a" in output
     assert "client_b_key=operator-test-b" in output
-    assert "client_c_key=operator-test-c" in output
     assert all(
-        not event[3] or event[3] == (31,) for event in arbiter.events
+        not event[3] or event[3] == (31,) for event in allocator.events
     )
 
 
@@ -283,7 +287,7 @@ def test_cli_values_and_explicit_key_prefix_are_forwarded():
     ],
 )
 def test_invalid_cli_values_fail_before_transport_creation(arguments):
-    factory = FakeTransportFactory(FakeAppManagerArbiter())
+    factory = FakeTransportFactory(FakeAppManagerSlotAllocator())
     with pytest.raises(SystemExit):
         module.main(
             arguments + ["--confirm-live-lock"],
@@ -297,7 +301,7 @@ def test_invalid_cli_values_fail_before_transport_creation(arguments):
     [
         (
             {("a", INTERP_LOCK_COMMAND): SERIALIZED_NG},
-            {"a": [INTERP_LOCK_COMMAND], "b": [], "c": []},
+            {"a": [INTERP_LOCK_COMMAND], "b": []},
         ),
         (
             {("a", INTERP_CONVERT_COMMAND): SERIALIZED_NULL},
@@ -308,11 +312,21 @@ def test_invalid_cli_values_fail_before_transport_creation(arguments):
                     INTERP_UNLOCK_COMMAND,
                 ],
                 "b": [],
-                "c": [],
             },
         ),
         (
-            {("b", INTERP_LOCK_COMMAND): SERIALIZED_OK},
+            {("b", INTERP_LOCK_COMMAND): SERIALIZED_NG},
+            {
+                "a": [
+                    INTERP_LOCK_COMMAND,
+                    INTERP_CONVERT_COMMAND,
+                    INTERP_UNLOCK_COMMAND,
+                ],
+                "b": [INTERP_LOCK_COMMAND],
+            },
+        ),
+        (
+            {("b", INTERP_CONVERT_COMMAND): SERIALIZED_NULL},
             {
                 "a": [
                     INTERP_LOCK_COMMAND,
@@ -324,7 +338,21 @@ def test_invalid_cli_values_fail_before_transport_creation(arguments):
                     INTERP_CONVERT_COMMAND,
                     INTERP_UNLOCK_COMMAND,
                 ],
-                "c": [],
+            },
+        ),
+        (
+            {("b", INTERP_UNLOCK_COMMAND): SERIALIZED_NG},
+            {
+                "a": [
+                    INTERP_LOCK_COMMAND,
+                    INTERP_CONVERT_COMMAND,
+                    INTERP_UNLOCK_COMMAND,
+                ],
+                "b": [
+                    INTERP_LOCK_COMMAND,
+                    INTERP_CONVERT_COMMAND,
+                    INTERP_UNLOCK_COMMAND,
+                ],
             },
         ),
         (
@@ -335,48 +363,7 @@ def test_invalid_cli_values_fail_before_transport_creation(arguments):
                     INTERP_CONVERT_COMMAND,
                     INTERP_UNLOCK_COMMAND,
                 ],
-                "b": [INTERP_LOCK_COMMAND],
-                "c": [],
-            },
-        ),
-        (
-            {("c", INTERP_LOCK_COMMAND): SERIALIZED_NG},
-            {
-                "a": [
-                    INTERP_LOCK_COMMAND,
-                    INTERP_CONVERT_COMMAND,
-                    INTERP_UNLOCK_COMMAND,
-                ],
-                "b": [INTERP_LOCK_COMMAND],
-                "c": [INTERP_LOCK_COMMAND],
-            },
-        ),
-        (
-            {("c", INTERP_CONVERT_COMMAND): SERIALIZED_NULL},
-            {
-                "a": [
-                    INTERP_LOCK_COMMAND,
-                    INTERP_CONVERT_COMMAND,
-                    INTERP_UNLOCK_COMMAND,
-                ],
-                "b": [INTERP_LOCK_COMMAND],
-                "c": [
-                    INTERP_LOCK_COMMAND,
-                    INTERP_CONVERT_COMMAND,
-                    INTERP_UNLOCK_COMMAND,
-                ],
-            },
-        ),
-        (
-            {("c", INTERP_UNLOCK_COMMAND): SERIALIZED_NG},
-            {
-                "a": [
-                    INTERP_LOCK_COMMAND,
-                    INTERP_CONVERT_COMMAND,
-                    INTERP_UNLOCK_COMMAND,
-                ],
-                "b": [INTERP_LOCK_COMMAND],
-                "c": [
+                "b": [
                     INTERP_LOCK_COMMAND,
                     INTERP_CONVERT_COMMAND,
                     INTERP_UNLOCK_COMMAND,
@@ -395,12 +382,11 @@ def test_invalid_cli_values_fail_before_transport_creation(arguments):
                     INTERP_UNLOCK_COMMAND,
                 ],
                 "b": [INTERP_LOCK_COMMAND],
-                "c": [],
             },
         ),
         (
             {
-                ("b", INTERP_LOCK_COMMAND):
+                ("b", INTERP_CONVERT_COMMAND):
                 SystemExit("fake system exit")
             },
             {
@@ -409,8 +395,11 @@ def test_invalid_cli_values_fail_before_transport_creation(arguments):
                     INTERP_CONVERT_COMMAND,
                     INTERP_UNLOCK_COMMAND,
                 ],
-                "b": [INTERP_LOCK_COMMAND],
-                "c": [],
+                "b": [
+                    INTERP_LOCK_COMMAND,
+                    INTERP_CONVERT_COMMAND,
+                    INTERP_UNLOCK_COMMAND,
+                ],
             },
         ),
     ],
@@ -418,16 +407,46 @@ def test_invalid_cli_values_fail_before_transport_creation(arguments):
 def test_failures_release_only_owned_leases_once(
     results, expected_commands
 ):
-    factory = FakeTransportFactory(FakeAppManagerArbiter(results))
+    factory = FakeTransportFactory(FakeAppManagerSlotAllocator(results))
 
     status, output, error_output = _run(factory)
 
     assert status == 1
-    assert "result=success" not in output
+    assert "result=observed_semantics" not in output
     assert "result=failure" in error_output
     for client_name, commands in expected_commands.items():
         assert _commands(factory, client_name) == commands
         assert commands.count(INTERP_UNLOCK_COMMAND) <= 1
+
+
+def test_explicit_b_lock_ng_keeps_typed_rejection_handling():
+    results = {("b", INTERP_LOCK_COMMAND): SERIALIZED_NG}
+    factory = FakeTransportFactory(FakeAppManagerSlotAllocator(results))
+
+    status, unused_output, error_output = _run(factory)
+
+    assert status == 1
+    assert "error_type=AppManagerLockRejectedError" in error_output
+    assert _commands(factory, "b") == [INTERP_LOCK_COMMAND]
+
+
+def test_same_timer_address_has_dedicated_error_and_reverse_cleanup():
+    allocator = FakeAppManagerSlotAllocator()
+    allocator.results[("b", INTERP_CONVERT_COMMAND)] = _serialized_short(
+        allocator.next_timer
+    )
+    factory = FakeTransportFactory(allocator)
+
+    status, unused_output, error_output = _run(factory)
+
+    assert status == 1
+    assert "error_type=AppManagerCompetitionTimerAliasError" in error_output
+    assert [event[2] for event in allocator.events[-2:]] == [
+        "phase7-lock-b",
+        "phase7-lock-a",
+    ]
+    assert _commands(factory, "b").count(INTERP_UNLOCK_COMMAND) == 1
+    assert _commands(factory, "a").count(INTERP_UNLOCK_COMMAND) == 1
 
 
 def test_primary_and_cleanup_errors_are_both_reported():
@@ -435,7 +454,7 @@ def test_primary_and_cleanup_errors_are_both_reported():
         ("b", INTERP_LOCK_COMMAND): RuntimeError("primary failure"),
         ("a", INTERP_UNLOCK_COMMAND): SERIALIZED_NG,
     }
-    factory = FakeTransportFactory(FakeAppManagerArbiter(results))
+    factory = FakeTransportFactory(FakeAppManagerSlotAllocator(results))
 
     status, unused_output, error_output = _run(factory)
 

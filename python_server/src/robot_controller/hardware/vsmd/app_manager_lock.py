@@ -1,4 +1,4 @@
-"""Lease-based SotaAppManager LED interpolation lock candidate."""
+"""Lease-based SotaAppManager interpolation timer-slot client."""
 
 import threading
 import typing
@@ -161,11 +161,12 @@ class AppManagerLedLockLease(object):
 
 
 class AppManagerLedLock(object):
-    """Acquire independent LED lock leases through SotaAppManager.
+    """Acquire independent interpolation timer leases through AppManager.
 
-    This candidate is intentionally not installed as the production
-    ``VsmdLedLock``. Each call creates a fresh ASCII key and the returned lease
-    owns the exact immutable IDs needed for its one unlock attempt.
+    Each call creates a fresh ASCII key, and the returned lease owns the exact
+    immutable IDs needed for its one unlock attempt. The class name preserves
+    the existing API; a successful request does not prove LED-ID-exclusive
+    cross-process arbitration.
     """
 
     def __init__(self, transport=None, key_factory=None):
@@ -183,7 +184,7 @@ class AppManagerLedLock(object):
 
     def acquire_leds(self, led_ids):
         # type: (typing.Sequence[int]) -> AppManagerLedLockLease
-        """Lock IDs, convert the unique key, and return an owned lease."""
+        """Request IDs, convert the unique key, and return an owned lease."""
         validated_ids = validate_led_ids(led_ids)
         key = self._key_factory()
         self._validate_generated_key(key)

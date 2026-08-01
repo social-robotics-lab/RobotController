@@ -1,4 +1,4 @@
-"""Explicit three-client SotaAppManager LED lock competition probe.
+"""Explicit two-client SotaAppManager timer-slot observation probe.
 
 This operator diagnostic creates only AppManager transports. It performs no
 direct robot-memory operation and has no timing-based hold interval.
@@ -18,17 +18,12 @@ from robot_controller.hardware.vsmd.app_manager_transport import (
     DEFAULT_APP_MANAGER_PORT,
     DEFAULT_APP_MANAGER_TIMEOUT_SECONDS,
 )
-from robot_controller.hardware.vsmd.errors import (
-    AppManagerLockRejectedError,
-)
-
-
 DEFAULT_LED_ID = 14
 DEFAULT_KEY_PREFIX = "phase7-lock"
 
 
-class AppManagerCompetitionUnexpectedLockError(Exception):
-    """Client B acquired a lock that the competition expected to reject."""
+class AppManagerCompetitionTimerAliasError(Exception):
+    """Both observed clients received the same interpolation timer slot."""
 
 
 class AppManagerCompetitionCleanupError(Exception):
@@ -121,8 +116,8 @@ def create_argument_parser():
     """Build the explicit opt-in competition diagnostic CLI."""
     parser = argparse.ArgumentParser(
         description=(
-            "Verify AppManager rejection while client A owns one LED, "
-            "then reacquire with client C after A releases."
+            "Observe independent AppManager timer slots for two keys that "
+            "request the same LED ID."
         )
     )
     parser.add_argument(
@@ -161,7 +156,7 @@ def _new_clients(arguments, transport_factory, lock_factory):
     # type: (argparse.Namespace, typing.Any, typing.Any) -> typing.Tuple[typing.Tuple[typing.Any, ...], typing.Tuple[str, ...]]
     keys = tuple(
         "{0}-{1}".format(arguments.key_prefix, suffix)
-        for suffix in ("a", "b", "c")
+        for suffix in ("a", "b")
     )
     locks = []
     for key in keys:
@@ -192,7 +187,7 @@ def _release_once(states, name):
 def _cleanup_known_leases(states):
     # type: (typing.Dict[str, typing.Any]) -> typing.Tuple[BaseException, ...]
     errors = []
-    for name in ("c", "b", "a"):
+    for name in ("b", "a"):
         try:
             _release_once(states, name)
         except BaseException as error:
@@ -205,7 +200,6 @@ def _run_competition(arguments, locks, keys, output):
     states = {
         "a": {"lease": None, "release_attempted": False},
         "b": {"lease": None, "release_attempted": False},
-        "c": {"lease": None, "release_attempted": False},
     }  # type: typing.Dict[str, typing.Any]
     try:
         print("client_a_key={0}".format(keys[0]), file=output)
@@ -222,44 +216,31 @@ def _run_competition(arguments, locks, keys, output):
 
         print("", file=output)
         print("client_b_key={0}".format(keys[1]), file=output)
-        try:
-            states["b"]["lease"] = locks[1].acquire_leds(
-                (arguments.led_id,)
-            )
-        except AppManagerLockRejectedError as error:
-            print("client_b_lock_rejected=true", file=output)
-            print(
-                "client_b_error_type={0}".format(
-                    type(error).__name__
-                ),
-                file=output,
-            )
-            print("client_b_convert_sent=false", file=output)
-            print("client_b_unlock_sent=false", file=output)
-        else:
-            print("client_b_lock_rejected=false", file=output)
-            raise AppManagerCompetitionUnexpectedLockError(
-                "client B unexpectedly acquired the contested LED"
-            )
-
-        print("", file=output)
-        _release_once(states, "a")
-        print("client_a_lock_released=true", file=output)
-
-        print("", file=output)
-        print("client_c_key={0}".format(keys[2]), file=output)
-        states["c"]["lease"] = locks[2].acquire_leds(
+        states["b"]["lease"] = locks[1].acquire_leds(
             (arguments.led_id,)
         )
-        print("client_c_lock_acquired=true", file=output)
+        print("client_b_lock_acquired=true", file=output)
         print(
-            "client_c_timer_address={0}".format(
-                states["c"]["lease"].timer_address
+            "client_b_timer_address={0}".format(
+                states["b"]["lease"].timer_address
             ),
             file=output,
         )
-        _release_once(states, "c")
-        print("client_c_lock_released=true", file=output)
+        if (
+            states["a"]["lease"].timer_address
+            == states["b"]["lease"].timer_address
+        ):
+            raise AppManagerCompetitionTimerAliasError(
+                "clients A and B received the same interpolation timer slot"
+            )
+        print("timer_addresses_distinct=true", file=output)
+        print("cross_process_exclusion=false", file=output)
+
+        print("", file=output)
+        _release_once(states, "b")
+        print("client_b_lock_released=true", file=output)
+        _release_once(states, "a")
+        print("client_a_lock_released=true", file=output)
     except BaseException as primary_error:
         cleanup_errors = _cleanup_known_leases(states)
         if cleanup_errors:
@@ -316,7 +297,7 @@ def main(
     error_output=None,
 ):
     # type: (typing.Optional[typing.Sequence[str]], typing.Any, typing.Any, typing.Any, typing.Any) -> int
-    """Run the explicit A/B/A-release/C sequence without automatic retry."""
+    """Run the explicit A/B allocation and B/A release without retry."""
     if output is None:
         output = sys.stdout
     if error_output is None:
@@ -328,7 +309,7 @@ def main(
         print("result=confirmation_required", file=output)
         return 0
 
-    print("SotaAppManager LED lock competition probe", file=output)
+    print("SotaAppManager LED timer-slot observation probe", file=output)
     print("live_network=true", file=output)
     print("live_lock=true", file=output)
     print("led_id={0}".format(arguments.led_id), file=output)
@@ -346,7 +327,7 @@ def main(
     print("vsmd_transport_created=false", file=output)
     print("vsmd_read_write=false", file=output)
     print("automatic_retry=false", file=output)
-    print("result=success", file=output)
+    print("result=observed_semantics", file=output)
     return 0
 
 
