@@ -544,6 +544,28 @@ byte/typed memory、memory map、probeまでのread-only層がSSH tunnel越し�
 [`protocol-compatibility.md`](protocol-compatibility.md)および
 [`sota-backend-design.md`](sota-backend-design.md)に集約する。
 
+2026-08-01、専用のraw-axis observerについてIntel Edison上のread-only runtime
+acceptanceを完了した。observerのread pathは次のとおりである。
+
+```text
+SotaAxisReadOnlyObserver.observe()
+  -> VsmdSotaRawAxisStateSource.read_raw_positions()
+  -> VsmdTypedMemory.read_s16_array()
+  -> VsmdMemoryClient.read_bytes()
+  -> VsmdTcpTransport.send() / read_line()
+  -> 32 signed S16 values
+  -> CSV output
+```
+
+memory read requestは`transport.send()`からTCP 6498へ送信される。これはnetwork送信を
+伴うVSMD read pathであり、network I/Oがないという意味のread-onlyではない。このobserver
+pathは`write_bytes()`、`encode_write_request()`、typed memory write、AppManager、servo
+target writeへ接続しない。read pathのruntime acceptanceをwrite pathの安全性または互換性へ
+一般化しない。raw index mappingとdegree変換の実機妥当性は未確認であり、live servo writeは
+引き続き禁止する。詳細は
+[`edison-read-only-axis-observer-acceptance.md`](edison-read-only-axis-observer-acceptance.md)
+を参照する。
+
 実機上の`sotalib.jar`通信をPCAPで確認したVSMD write形式は
 `w 0124 9c 0c\r\n`のようにcommand、4桁lower-case hexadecimal address、
 各2桁lower-case hexadecimal byteをASCII space 1個で区切る。Codecはこの

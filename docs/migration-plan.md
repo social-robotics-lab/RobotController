@@ -317,6 +317,35 @@ modeは将来課題である。
 
 ## 11. フェーズ8：Sota単一軸制御
 
+### Phase 8 read-only milestone
+
+2026-08-01、revision
+`9008d062847d46ed0f85c7cb5c942c74ff7411e9`のSota raw-axis observerについて、
+Intel Edison / CPython 3.6.15上のread-only runtime acceptanceを完了した。明示的な
+confirmationの下で32個のsigned S16値を1 sampleおよび100 ms指定の10 samplesとして
+取得し、CSV形式と、最終検査時点で**pycache**、*.pyc、*.pyoが検出されなかったことを
+証跡で確認した。この完了はraw observation pathだけを
+対象とし、物理軸mapping、degree変換、servo writeまたはmotion controlの完了を意味しない。
+詳細は
+[`edison-read-only-axis-observer-acceptance.md`](edison-read-only-axis-observer-acceptance.md)
+を参照する。
+
+### Phase 8A: read-only ServoReadPos[32] mapping investigation
+
+次工程はlive writeではなく、read-only mapping調査とする。このphaseでは次を禁止する。
+
+* servo target write
+* torque change
+* automatic pose initialization
+* blind mapping assumption
+* `axis_id - 1` assumption
+* Java array orderの無検証流用
+
+mappingを確認済みとするには、index mappingの根拠とoperator-observed physical correlationを
+記録する必要がある。operator-observed physical correlationは観察方法を別途reviewした上で
+実施し、torque stateとvendor-approved procedureが確認されるまで、関節を手動で動かさない。
+これらが揃うまで、以下の単一軸write試験へ進まない。
+
 ### 事前条件
 
 * 軸IDと物理軸の対応が確認済み。

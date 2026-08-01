@@ -1019,3 +1019,30 @@ preflight, and Linux subprocess evidence. It does not claim enforcement over
 non-cooperating processes or alter the verified production mouth LED normal
 path. Phase 8 may begin after this documentation correction is committed and
 pushed.
+
+## 19. Sota raw-axis read-only runtime acceptance
+
+2026-08-01、revision
+`9008d062847d46ed0f85c7cb5c942c74ff7411e9`のread-only axis observerを
+Intel Edison / CPython 3.6.15上でruntime acceptanceした。VSMD memory readにより
+32個のsigned S16値を1 sampleおよび100 ms指定の10 samplesとして取得し、CSVの
+exact header、37 columns、row count、sample sequence、timing field、signed S16範囲を
+検証した。
+
+この結果はraw storage observation pathだけを対象とする。`ServoReadPos[32]`のraw index
+mappingはunknownのままであり、degree-level protocol compatibilityおよびwrite-path
+compatibilityは主張しない。read requestはTCP 6498へ送信されるが、reviewed observer pathは
+VSMD memory-write operationを含まない。network captureによるwrite非発生の証明ではない。
+詳細な実行結果、証跡範囲、未確認事項は
+[`edison-read-only-axis-observer-acceptance.md`](edison-read-only-axis-observer-acceptance.md)
+に記録する。
+
+```text
+read-only axis observer runtime acceptance = completed
+accepted revision = 9008d062847d46ed0f85c7cb5c942c74ff7411e9
+raw values read per sample = 32 signed S16
+raw index mapping = unknown
+degree-level compatibility = not claimed
+write-path compatibility = not claimed
+live servo write = prohibited
+```
