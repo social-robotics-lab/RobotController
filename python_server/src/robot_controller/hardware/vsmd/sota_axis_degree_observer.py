@@ -1,8 +1,10 @@
 """Opt-in finite CSV observer for mapped Sota axis degrees.
 
 The deployed ServoSettings sequence and Java read path confirm that Sota
-servo IDs 1 through 8 select raw indices 1 through 8. This source mapping
-does not establish runtime physical correlation or physical angle accuracy.
+servo IDs 1 through 8 select raw indices 1 through 8. Operator-guided
+runtime observation confirms the physical axis and sign for all eight
+entries. Absolute angle accuracy, zero offsets, range limits, and snapshot
+atomicity remain unverified.
 """
 
 import argparse
@@ -210,8 +212,9 @@ def create_argument_parser():
     """Build the explicit finite read-only mapped-degree observer CLI."""
     parser = argparse.ArgumentParser(
         description=(
-            "Observe confirmed-name Sota axis degrees as finite CSV. "
-            "Runtime physical correlation and angle accuracy are unverified."
+            "Observe physically correlated Sota axis names as finite degree CSV. "
+            "Absolute angle accuracy, zero offsets, range limits, and "
+            "snapshot atomicity are unverified."
         )
     )
     parser.add_argument(CONFIRMATION_FLAG, action="store_true")

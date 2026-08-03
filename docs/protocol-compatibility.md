@@ -1046,3 +1046,41 @@ degree-level compatibility = not claimed
 write-path compatibility = not claimed
 live servo write = prohibited
 ```
+
+
+## 20. Sota ServoReadPos axis correlation status
+
+2026-08-03、revision
+`96e28f4976993e8d5260bc1cad48938128546843`のread-only degree observerと
+operator-controlled実機観測により、次のmappingと符号方向を確認した。
+
+| Public axis | `ServoReadPos` raw index | Positive direction |
+| --- | ---: | --- |
+| `BODY_Y` | 1 | 胴体をSotaから見て左へ回す |
+| `L_SHOU` | 2 | 左上腕を上げる |
+| `L_ELBO` | 3 | 左肘を伸ばす側 |
+| `R_SHOU` | 4 | 右上腕を下げる側 |
+| `R_ELBO` | 5 | 右肘を曲げる |
+| `HEAD_Y` | 6 | 頭をSotaから見て左へ回す |
+| `HEAD_P` | 7 | 顔を下へ向ける |
+| `HEAD_R` | 8 | 左耳を左肩へ近づける |
+
+この結果によりraw index mappingとaxis signは確認済みである。Pythonの
+degree observerが使用するID 1～8 → raw index 1～8のmappingは実機correlationと
+一致した。
+
+ただし、次の事項はprotocol compatibilityとして未確認である。
+
+* raw値からphysical degreeへの絶対精度
+* zero offsetおよび個体差
+* 定義済みdegree rangeが実機安全可動域であること
+* `ServoReadPos`がactual、target、encoderのどれを表すか
+* 32値のcontrol-tick atomicity
+* production `read_axes` backendへの統合
+* write-path compatibilityおよびlive motion safety
+
+したがって、axis/index/sign correlationの完了だけをもって、Java版との
+degree-level完全互換またはsingle-axis write readinessを主張しない。
+詳細は
+[`evidence/sota-axis-physical-correlation-2026-08-03.md`](evidence/sota-axis-physical-correlation-2026-08-03.md)
+を参照する。

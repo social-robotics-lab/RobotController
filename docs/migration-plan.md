@@ -346,6 +346,33 @@ mappingを確認済みとするには、index mappingの根拠とoperator-observ
 実施し、torque stateとvendor-approved procedureが確認されるまで、関節を手動で動かさない。
 これらが揃うまで、以下の単一軸write試験へ進まない。
 
+### Phase 8b2c: physical axis/index/sign correlation（完了）
+
+2026-08-03、revision
+`96e28f4976993e8d5260bc1cad48938128546843`を対象として、static Java／
+active memdef根拠とoperator-controlled read-only実機観測を組み合わせ、
+`ServoReadPos[32]`のraw index 1～8と8つの公開軸との対応、および各軸の
+符号方向を確認した。
+
+| Axis | Raw index | Positive direction |
+| --- | ---: | --- |
+| `BODY_Y` | 1 | 胴体をSotaから見て左へ回す |
+| `L_SHOU` | 2 | 左上腕を上げる |
+| `L_ELBO` | 3 | 左肘を伸ばす側 |
+| `R_SHOU` | 4 | 右上腕を下げる側 |
+| `R_ELBO` | 5 | 右肘を曲げる |
+| `HEAD_Y` | 6 | 頭をSotaから見て左へ回す |
+| `HEAD_P` | 7 | 顔を下へ向ける |
+| `HEAD_R` | 8 | 左耳を左肩へ近づける |
+
+詳細な実行条件、signal dominance、安全境界、未確認事項は
+[`evidence/sota-axis-physical-correlation-2026-08-03.md`](evidence/sota-axis-physical-correlation-2026-08-03.md)
+に記録する。
+
+これにより「軸IDと物理軸の対応が確認済み」は満たした。ただし、絶対角度精度、
+zero offset、実機安全可動域、`ServoReadPos`の意味論、write path、停止・復帰の
+安全性は未確認である。single-axis live writeは引き続き禁止する。
+
 ### 事前条件
 
 * 軸IDと物理軸の対応が確認済み。
