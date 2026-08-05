@@ -1,5 +1,12 @@
 # docs/migration-plan.md
 
+> Status: Superseded
+>
+> この文書はPython版RobotControllerへの移植計画を記録したhistorical documentである。
+> 現在のJavaオンリー再実装計画については、
+> [`plans/java-redesign-migration-plan.md`](plans/java-redesign-migration-plan.md)
+> を参照すること。
+
 ## 1. 文書の目的
 
 本書は、既存Java版RobotControllerからPython版へ、安全かつ段階的に移行するための作業順序、判定基準、実機試験およびロールバック方針を定義する。
