@@ -34,3 +34,6 @@ __pycache__/
 .coverage
 htmlcov/
 *.egg-info/
+
+# Java
+java_server/**/target/
