@@ -47,7 +47,9 @@ public final class FrameCodecTest {
 
     @Test
     public void rejectsEofInHeader() throws Exception {
-        assertCodecFailure(new byte[] {0, 0, 0}, 16, "frame header");
+        for (int received = 0; received < 4; received++) {
+            assertCodecFailure(new byte[received], 16, "frame header");
+        }
     }
 
     @Test
@@ -61,11 +63,36 @@ public final class FrameCodecTest {
                 new byte[] {(byte) 0x80, 0, 0, 0},
                 Integer.MAX_VALUE,
                 "negative frame length");
+        assertCodecFailure(
+                new byte[] {(byte) 0xff, (byte) 0xff, (byte) 0xff, (byte) 0xff},
+                Integer.MAX_VALUE,
+                "negative frame length");
     }
 
     @Test
     public void rejectsLengthAboveCallerMaximumBeforeAllocation() throws Exception {
         assertCodecFailure(new byte[] {0, 0, 1, 0}, 255, "exceeds maximum");
+        assertCodecFailure(
+                new byte[] {0x7f, (byte) 0xff, (byte) 0xff, (byte) 0xff},
+                1_024,
+                "exceeds maximum");
+    }
+
+    @Test
+    public void acceptsExactCallerMaximumAndRejectsMaximumPlusOne() throws Exception {
+        assertArrayEquals(
+                new byte[] {1, 2, 3, 4},
+                FrameCodec.readFrame(
+                        new ByteArrayInputStream(new byte[] {0, 0, 0, 4, 1, 2, 3, 4}),
+                        4));
+        assertCodecFailure(new byte[] {0, 0, 0, 5}, 4, "exceeds maximum");
+
+        try {
+            FrameCodec.writeFrame(new ByteArrayOutputStream(), new byte[5], 4);
+            fail("expected output maximum rejection");
+        } catch (FrameCodecException expected) {
+            // The outbound path applies the same caller-owned bound.
+        }
     }
 
     private static void assertCodecFailure(byte[] bytes, int maximum, String messagePart)

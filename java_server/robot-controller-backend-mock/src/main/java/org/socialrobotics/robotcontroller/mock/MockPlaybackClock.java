@@ -6,6 +6,7 @@ import org.socialrobotics.robotcontroller.core.audio.PlaybackClock;
 public final class MockPlaybackClock implements PlaybackClock {
     private final int sampleRateHz;
     private long playedFrames;
+    private RuntimeException readFailure;
 
     public MockPlaybackClock(int sampleRateHz) {
         if (sampleRateHz <= 0) {
@@ -16,11 +17,13 @@ public final class MockPlaybackClock implements PlaybackClock {
 
     @Override
     public synchronized long playedFrames() {
+        throwIfReadFails();
         return playedFrames;
     }
 
     @Override
     public synchronized long playedMicroseconds() {
+        throwIfReadFails();
         return playedFrames * 1000000L / sampleRateHz;
     }
 
@@ -36,5 +39,24 @@ public final class MockPlaybackClock implements PlaybackClock {
             throw new IllegalArgumentException("frameCount cannot be applied safely");
         }
         playedFrames += frameCount;
+    }
+
+    /** Injects a deterministic playhead read failure until cleared. */
+    public synchronized void failReads(RuntimeException failure) {
+        if (failure == null) {
+            throw new NullPointerException("failure");
+        }
+        readFailure = failure;
+    }
+
+    /** Clears a previously injected playhead read failure. */
+    public synchronized void clearReadFailure() {
+        readFailure = null;
+    }
+
+    private void throwIfReadFails() {
+        if (readFailure != null) {
+            throw readFailure;
+        }
     }
 }

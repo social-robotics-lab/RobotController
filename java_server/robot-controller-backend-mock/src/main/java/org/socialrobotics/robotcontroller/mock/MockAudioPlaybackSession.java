@@ -10,11 +10,17 @@ import org.socialrobotics.robotcontroller.core.audio.PlaybackClock;
 public final class MockAudioPlaybackSession implements AudioPlaybackSession {
     private final PcmAudioData audio;
     private final MockPlaybackClock clock;
+    private AudioOutputException startFailure;
     private AudioPlaybackState state = AudioPlaybackState.CREATED;
 
     MockAudioPlaybackSession(PcmAudioData audio) {
+        this(audio, null);
+    }
+
+    MockAudioPlaybackSession(PcmAudioData audio, AudioOutputException startFailure) {
         this.audio = audio;
         this.clock = new MockPlaybackClock(audio.sampleRateHz());
+        this.startFailure = startFailure;
     }
 
     @Override
@@ -23,6 +29,11 @@ public final class MockAudioPlaybackSession implements AudioPlaybackSession {
             throw new AudioOutputException("cannot start a closed session");
         }
         if (state == AudioPlaybackState.CREATED) {
+            if (startFailure != null) {
+                AudioOutputException failure = startFailure;
+                startFailure = null;
+                throw failure;
+            }
             state = AudioPlaybackState.PLAYING;
         }
     }

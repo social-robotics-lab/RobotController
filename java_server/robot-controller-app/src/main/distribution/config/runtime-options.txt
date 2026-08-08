@@ -1,0 +1,34 @@
+RobotController runtime configuration
+=====================================
+
+Configuration source: command-line options only.
+
+Required:
+  --backend=mock
+
+Network and bounded execution:
+  --listen-host=127.0.0.1
+  --listen-port=22222
+  --connection-workers=16
+  --connection-queue-capacity=16
+  --hardware-queue-capacity=16
+
+Protocol and audio limits:
+  --command-frame-limit=64
+  --json-frame-limit=1048576
+  --wav-frame-limit=20971520
+  --audio-duration-limit-ms=600000
+  --mouth-sync-interval-ms=10
+
+Lifecycle:
+  --socket-timeout-ms=5000
+  --shutdown-timeout-ms=5000
+  --process-lock-path=<platform-specific absolute or relative path>
+
+The default lock path is robot-controller.lock below java.io.tmpdir. Relative
+paths are normalized to absolute paths at startup. Parent directories are not
+created automatically. --listen-port=0 is accepted only together with the
+hardware-free --smoke-test option.
+
+The VSTONE backend is intentionally unavailable in this phase. Do not use the
+mock backend as evidence of physical robot safety or behavior.
