@@ -30,9 +30,11 @@
 
 | Capability | Status | Public class | Public method | Signature | Official source | Legacy reference | Remaining uncertainty | Manual test |
 |---|---|---|---|---|---|---|---|---|
+| Manual Gate 1 probe readiness | **READY FOR HUMAN MANUAL COMPILE/EXECUTION** | `CRobotPose`／`CRobotMotion` | `setLED_Sota`／key付きservo lock／key付き`play` | 下記各API signature | 公式JavaDocと固定commitのofficial `MotionSample.java` | legacy使用例はservo非依存性の安全根拠にしない | LED-only `play`が本質的に無副作用という保証はない。guard実挙動とhardware behaviorはUNKNOWN | guarded probe sourceを準備。compile／manual execution／manual observation未実施 |
 | Sota mouth LED ID `14` | **WITHDRAWN ASSUMPTION** | N/A | N/A | N/A | `CSotaMotion` constantsとconstant valuesにSota mouth LED IDなし。ID 14は`CCommUMotion.SV_MOUTH` | legacy `LedConverter_Sota`とhistorical VSMD evidenceはID 14を使用 | Sota mouth-only public IDの有無 | IDを使う試験は禁止。VSTONE clarification待ち |
 | Sota complete LED pose | **CONFIRMED**（API） | `CRobotPose` | `setLED_Sota` | `void setLED_Sota(Color eye_L, Color eye_R, int mouth, Color powerbtn)` | `CRobotPose` JavaDoc、official `MotionSample.java` | legacy Pose pathもfull LED valuesを構成 | brightness範囲、他LED保持、実機反映 | Gate 1A |
-| LED pose commit | **CONFIRMED**（API） | `CRobotMotion` | `play` | `boolean play(CRobotPose pose, int msec)`およびlock-key overload | `CRobotMotion` JavaDoc、official sample | legacy `PoseExecutorThread`が`play`を使用 | LED-only transition、rate、return false semantics | Gate 1A／1C |
+| LED pose commit candidate | **CONFIRMED**（API surface）／**GUARDED MANUAL PROBE** | `CRobotMotion` | `play` | `boolean play(CRobotPose pose, int msec, String LockKey)` | `CRobotMotion` JavaDoc、official sample | legacy `PoseExecutorThread`が`play`を使用 | LED-only poseでのservo write／interpolation、transition、rate、return false semantics | 異なるkeyのall-servo guard下でGate 1A／1Cをhuman-only確認 |
+| Gate 1 all-servo guard | **CONFIRMED**（API surface）／**UNVERIFIED**（実機semantics） | `CRobotMotion` | `getDefaultIDs`／`LockServoHandle`／`UnLockServoHandle` | `Byte[] getDefaultIDs()`、`boolean LockServoHandle(String, Byte[])`、`void UnLockServoHandle(String, Byte[])` | `CRobotMotion` JavaDoc。key不一致の`play`は制御できないとの説明 | legacy usageはguardの安全証明にしない | initialization副作用、全ID coverage、lock failure／crash／process semantics | Gate 1A-0で取得、Gate 1Dでreleaseを記録 |
 | Native voice-sync disable | **CONFIRMED**（API） | `CSotaMotion` | `disabeMouthLEDVoiceSync` | `void disabeMouthLEDVoiceSync()` | `CSotaMotion` JavaDoc | legacyは直接利用していない | effect、idempotency、failure、他owner interaction | Gate 1B |
 | Native voice-sync enable | **CONFIRMED**（API） | `CSotaMotion` | `enabeMouthLEDVoiceSync` | `void enabeMouthLEDVoiceSync()` | `CSotaMotion` JavaDoc | legacyは直接利用していない | restore semantics、元状態がdisabledの場合 | Gate 1B／1D |
 | Native voice-sync state query | **NOT AVAILABLE**（surveyed API） | `CSotaMotion` | none found | N/A | `CSotaMotion` JavaDoc method list | legacyにもreliable getterなし | installed version、vendor-approved query | Gate 1 preflight／vendor clarification |
@@ -48,7 +50,7 @@
 | Capability | 判定 | 公開APIまたは観測 | 設計上の結論 | 残る確認 |
 |---|---|---|---|---|
 | Sota全LED poseの構築 | CONFIRMED | `CRobotPose.setLED_Sota(Color eye_L, Color eye_R, int mouth, Color powerbtn)` | eyes、mouth、power buttonを一つのposeへ設定できる | 各値のinstalled JAR上の厳密な許容範囲 |
-| poseのhardware反映 | CONFIRMED | `CRobotMotion.play(CRobotPose pose, int msec)`、`play(..., String LockKey)`、`play(..., String LockKey, boolean ledposcheck)` | `CRobotPose`変更だけではなく、`play`をcommit境界にする | `msec=0`等のLED-only更新semanticsとrate limit |
+| poseのhardware反映候補 | CONFIRMED（surface）／GUARDED MANUAL PROBE | `CRobotMotion.play(CRobotPose pose, int msec)`、`play(..., String LockKey)`、`play(..., String LockKey, boolean ledposcheck)` | guarded probeは3引数版だけを使い、全default servoを別keyでlockし、servo／torque mapの空を各`play`直前に確認する | LED-only poseのvendor guaranteeではない。initialization／lock／transition／rate／physical semanticsはhuman observation対象 |
 | mouth最大値のsample | CONFIRMED | 公式`MotionSample.java`が`setLED_Sota(..., 255, ...)`を「口LED(Max)」として使用 | 255は公式sample上の最大例 | installed JARで0..255全域が受理されるか、範囲外時の挙動 |
 | mouthだけを指定するpose primitive | INFERRED | `CRobotPose.SetLed(Byte[] ids, Short[] leds)`または`SetLed(Map<Byte,Short>)`はsubsetを表現できる | 公開されたSota mouth LED IDが確認できれば独立更新候補になる | Sota mouth LEDの公式ID、値表現、`play`時の他LED保持 |
 | Sota mouth LEDの公開ID | UNKNOWN | `CSotaMotion`の公開定数は8個のservo ID。mouth LED定数はJavaDocで確認できない | 数値IDを推測、legacyから転記、またはtestへ固定しない | VSTONEへの問い合わせまたは公式資料による確認 |
@@ -70,13 +72,13 @@
 | unlock | CONFIRMED（surface） | `void UnLockLEDHandle(Byte[] ids)`、`void UnLockLEDHandle(String LockKey, Byte[] ids)` | 対応するrelease surfaceがある | 二重release、誤key、部分failure、失敗の通知 |
 | cross-process exclusive ownership | UNKNOWN | 公開JavaDocに保証なし | OS-level process lockとは別責務として扱う | AppManagerや別processとの競合時の実挙動 |
 
-VSTONE lockはvendor handleの利用権であり、Sota全体のcross-process mutexとはみなさない。新adapterではsingle hardware worker上でlock、key付き`play`、unlockを行い、lock成功前にvoice-syncやLED状態を変更しない。unlockはbest effort cleanupに含めるが、release失敗を成功として隠さない。exact mouth LED IDが未確認の間、mouth-only lockは実装しない。
+VSTONE lockはvendor handleの利用権であり、Sota全体のcross-process mutexとはみなさない。guarded probeでは`getDefaultIDs()`の全servoを専用keyでlockし、異なるkeyをLED `play`へ渡す。lock成功前にvoice-syncやLED状態を変更せず、falseならLED writeなしでABORTする。unlockはbest effort cleanupに含めるが、release失敗を成功として隠さない。exact mouth LED IDが未確認の間、mouth-only LED lockは実装しない。
 
 ## 5. Servo、pose、read、lifecycle
 
 | `RobotBackend` operation | 判定 | 公開API mapping候補 | Gap / gate |
 |---|---|---|---|
-| `initialize` | CONFIRMED（surface） | `new CRobotMem()` → `Connect()` → `new CSotaMotion(mem)` → `InitRobot_Sota()` | construction、class loading、startupで`ServoOn`、initial pose、LED、audioを実行しない。partial failure時は`Disconnect()`を試みる |
+| `initialize` | CONFIRMED（surface） | 公式sample順の`new CRobotMem()` → `new CSotaMotion(mem)` → `Connect()` → `InitRobot_Sota()` | construction、class loading、startupでservo power、initial pose、LED、audioを実行しない。partial failure時は`Disconnect()`を試みる |
 | lifecycle query | INFERRED | `CRobotMem.isConected()`（公式spelling）とadapter state | vendor APIだけではprojectの7状態を表現しないためadapterが所有する |
 | `readAxes` | CONFIRMED（surface） | `getDefaultIDs()`と`getReadpos()` | JavaDocはread positionの順序がdefault IDs順と説明する。ID→logical nameと単位変換はprofile/manual gate |
 | `applyPose` | CONFIRMED（surface） | `CRobotPose.SetPose(...)`、必要なら`SetLed(...)`、`CRobotMotion.play(...)` | angle range、単位、transition、lock key、return false、exceptionのtranslationが必要 |
@@ -117,7 +119,7 @@ Java SE `SourceDataLine`のplayheadはAPI形状として利用できるが、wal
 
 ### Case B — full LED pose coordination
 
-`setLED_Sota`と`play`は **CONFIRMED**。現時点の安全側設計候補は、adapter内の`LedCoordinator`がeyes、mouth、power buttonのvalidated logical stateを一括所有し、更新ごとに完全なLED poseを組み立てる方式である。ただし、`play`が未指定servo状態へ与える影響、rate limit、lock ID範囲を確認するまではproduction実装しない。
+`setLED_Sota`と`play`の公開surfaceは **CONFIRMED** だが、両者を組み合わせたLED-only commitのservo非依存semanticsは **UNKNOWN**。公式sampleはservo power、pose、LED設定、`play(...)`を組み合わせており、安全なLED-only使用例ではない。manual probeでは新規poseのservo／torque mapが空であることを設定前後と直前に検査し、全default servoを専用keyでguardし、異なるkeyで3引数`play`を行う。この多重防御はhuman-only characterizationを許可するがvendor guaranteeではない。production実装はGate 1 pass evidenceのreviewまで行わない。
 
 ### Case C — voice-syncが外部制御を妨げる
 
@@ -160,12 +162,14 @@ vendor objectをfacade外へ公開せず、robot hardware callはsingle hardware
 
 推奨候補は、provenance、license、SHA-256を確認した後にだけ有効になる専用Maven profileと、アクセス制御された組織内Maven repositoryの組合せである。versionを固定し、dependencyをVSTONE moduleだけへ限定する。再配布が許可されない場合はoperator-provisioned local Maven repositoryをfallback候補とし、`systemPath`、個人absolute path、public repositoryへのJAR commitは採用しない。このphaseではdependencyもprofileも追加しない。
 
-## 10. VSTONEへの確認事項
+## 10. VSTONEへの任意の追加確認事項
+
+次の問い合わせはrisk reductionに有用だが、guarded Gate 1 probe準備またはhuman executionの必須解除条件ではない。manual evidenceと不一致があれば、production設計を進めず再reviewする。
 
 1. 現行JavaDocに対応する`sotalib.jar`のversion、配布元、Edison image互換性は何か。
 2. Sota mouth LEDを`SetLed`で単独指定できる公開IDまたは公開constantはあるか。
 3. `setLED_Sota`のmouth引数の厳密な範囲、範囲外時の挙動、更新頻度上限は何か。
-4. LED-only `CRobotPose`を`play`したとき、未指定servo/LEDは保持されるか。
+4. `new CRobotPose()`へ`setLED_Sota(...)`だけを適用して`play`したとき、未指定servo fieldはskipされ、servo target、torque、interpolationへ一切のcommandまたは状態変化を生じないか。`ServoOn()`なしでLEDだけを反映できるか。`play`を使わない公開LED-only commit methodがある場合はexact signatureと対応versionは何か。
 5. `disabeMouthLEDVoiceSync`／`enabeMouthLEDVoiceSync`の初期状態、冪等性、失敗通知、query方法は何か。
 6. keyed/non-keyed LED lockのthread、process、key、重複、crash、partial overlap semanticsは何か。
 7. interpolation実行中に公開APIだけで安全にcancel/stopできるか。
@@ -173,4 +177,4 @@ vendor objectをfacade外へ公開せず、robot hardware callはsingle hardware
 9. `getLine()`を取得できる時点と、`getLongFramePosition()`のEdison上の精度は何か。
 10. Dog向けの公式Java motion class、profile、公開sampleは存在するか。
 
-これらが未解決の間、Sota mouth-only control、元voice-sync状態の完全な復元、running motion physical stop、Dog adapterをproduction-readyと表現しない。
+これらが未解決でもguarded manual probeはhuman-onlyで実施できるが、Sota mouth-only control、元voice-sync状態の完全な復元、running motion physical stop、Dog adapterをproduction-readyと表現しない。
