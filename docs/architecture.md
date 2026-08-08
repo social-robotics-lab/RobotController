@@ -49,6 +49,28 @@ Main / explicit configuration
 
 Mock compositionは明示的な`--backend=mock`選択時だけ利用できる。`--backend=vstone`はvendor object、vendor JAR、listen socketを生成する前に起動失敗する。Mockのlogical `MOUTH` writeはcoordinatorとserializationのtest oracleであり、VSTONE adapter、real audio output、LED lock／native voice-sync、actual mouth LEDは未実装である。Mock testの成功を実機semanticsの確認とはみなさない。
 
+### 1.2 2026-08-08 VSTONE public API audit boundary
+
+公開JavaDocでSota全LED poseの`CRobotPose.setLED_Sota(...)`、`CRobotMotion.play(...)`、LED handle lock、`CSotaMotion.disabeMouthLEDVoiceSync()`／`enabeMouthLEDVoiceSync()`のsurfaceは確認できた。一方、Sota mouth-only LED ID、元voice-sync状態のgetter、lockのcross-process semantics、running interpolation cancelは確認できない。Sota mouth LED IDを`14`とする旧計画上の仮定は採用しない。ID 14として公開確認できるものはCommUのmouth servoである。
+
+VSTONE adapterは当面、全logical LED stateを一つの`LedCoordinator`が所有してcomplete Sota LED poseを生成するCase Bを保守的候補とする。mouth-only primitiveは公式IDと他LED保持semanticsが確認されるまで実装しない。audio sessionはownership取得、native sync disable、playback、generation-aware mouth更新、zero、playback close、configured sync restore、unlockを一つのlifecycleとして扱う必要があり、現行logical `MOUTH`経路だけでは未完了である。根拠とmanual gateは[`vstone-public-api-capability-matrix.md`](evidence/vstone-public-api-capability-matrix.md)および[`vstone-manual-acceptance-runbook.md`](plans/vstone-manual-acceptance-runbook.md)に定義する。
+
+```text
+eye command ─────────┐
+mouth synchronizer ──┼─> LedCoordinator ─> complete Sota LED state
+power LED command ───┘                         └─> serialized hardware worker
+                                                   └─> VSTONE adapter
+                                                        └─> setLED_Sota(...) + play(...)
+```
+
+`LedCoordinator`はeye、mouth、power LEDのvalidated logical stateを単一所有する。mouth synchronizerは`setLED_Sota()`を直接呼ばず、eye commandはmouth stateを消さず、mouth updateはeye／power stateをstale snapshotへ戻さない。合成済みstateもhardware実行直前にgenerationを検証し、old audio generationの更新を拒否する。これはarchitecture decisionであり、このcheckpointでproduction classを実装しない。
+
+`setLED_Sota(...)`のpublic surfaceはCONFIRMEDだが、mouth brightnessの実機反映、eyes／power LEDとの相互作用、高頻度更新、native voice-syncとの競合、cleanup時の復元はUNKNOWNである。Case Bはprovisional architecture candidateであって、Gate 1前のproduction-ready confirmed designではない。
+
+`SingleInstanceProcessLock`はRobotController process全体の多重起動防止である。VSTONE LED lockはvendor API上のLED ownership／arbitration候補であり、API存在だけが確認済みである。process lock取得を、別VSTONE application、vendor daemon、native voice-syncとのLED排他確認に代用しない。VSTONE lockのcross-process exclusion、crash recovery、duplicate acquisitionはmanual／vendor gateとする。
+
+real audio候補は`CWavePlayer(AudioInputStream)`とJava SE `SourceDataLine`を維持する。Edison上のmemory-backed stream、start latency、stop／flush／close、played-frame精度、line ownership、device availability、voice-sync interactionを確認するまでは実装方式を確定せず、現在の`AudioOutput`、`AudioPlaybackSession`、`PlaybackClock` interfaceを変更しない。
+
 process lock pathはcommand-line設定から取得し、既定値は`java.io.tmpdir`直下の`robot-controller.lock`をabsolute／normalized pathとして使用する。親directoryは自動作成せず、`tryLock()`競合時はretry、sleep、lock file削除を行わない。applicationがchannelと`FileLock`を所有し、startup failureまたは通常shutdownの最後にrelease／closeする。pathnameはunlinkしない。このlockは同じpathとadvisory lock規約へ参加するprocess間だけを調停する。
 
 Maven packageは`target/robot-controller-dist/`へthin `RobotController.jar`、runtime `lib/`、command-line option説明を含む`config/`を生成する。artifactはrepository外absolute path、vendor JAR、hardware resourceを含めない。Mock smokeは配布directoryをworking directoryとして実行する。

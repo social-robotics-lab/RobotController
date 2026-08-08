@@ -3,6 +3,7 @@
 * Status: Accepted — implementation pending
 * Initial decision date: 2026-08-03
 * Amended: 2026-08-04 — greenfield Java implementation、in-memory audio、PCM-driven mouth LEDを追加
+* Amended: 2026-08-08 — VSTONE公開API監査に基づきSota mouth LED ID 14仮定を撤回し、Case B manual gateを追加
 * Scope: production RobotController architecture
 * Supersedes: Python production command serverを最終成果物とする方針
 
@@ -227,34 +228,51 @@ wall-clockだけを使うfallbackを用意する場合でも、audio buffer量�
 
 ### 9.4 VSTONE public mouth LED path
 
-Sotaのproduction candidateは、公開APIだけを使う。
+**Decision amendment — WITHDRAWN ASSUMPTION:** Sota mouth LEDのpublic LED IDは現時点で確認できていない。従来candidateに含めていたID `14`をSota mouth LEDとして扱わない。公開資料上、ID `14`として確認できるものは`CCommUMotion.SV_MOUTH`、すなわちCommUのmouth servoであり、Sota mouth LED controlの根拠には使用できない。production implementationでは、未確認のLED ID、低レベル定数、legacy mappingを推測で採用しない。
+
+Sotaのprovisional architecture candidateは **Case B: full LED state coordination** とする。`CRobotPose.setLED_Sota(Color eye_L, Color eye_R, int mouth, Color powerbtn)`の存在は公式公開APIで確認済みである。これはhardware behaviorの確認ではなく、production-ready designの確定でもない。
 
 ```text
-CRobotMotion.LockLEDHandle(lockKey, [14])
-CSotaMotion.disabeMouthLEDVoiceSync()
-CRobotPose.SetLed({14 -> brightness})
-CRobotMotion.play(pose, transitionMs, lockKey)
-CSotaMotion.enabeMouthLEDVoiceSync()
-CRobotMotion.UnLockLEDHandle(lockKey, [14])
+Eye state ───────┐
+Mouth brightness ├─> LedCoordinator
+Power LED state ─┘      └─> complete Sota LED state
+                              └─> VSTONE public API adapter
+                                      └─> CRobotPose.setLED_Sota(...)
+                                           + CRobotMotion.play(...)
 ```
 
-API method名の`disabe`／`enabe`は公開JavaDocどおりのspellingである。
+`LedCoordinator`は全logical LED stateの単一ownerであり、次を不変条件とする。
 
-このsequenceはcandidateであり、実機確認前に「verified」と表現しない。`LockLEDHandle`の戻り値、`play`の戻り値、cleanup failureを必ず扱う。
+* mouth synchronizerは`setLED_Sota()`を直接呼ばない。
+* eye commandは現在のmouth stateを消さない。
+* mouth updateはeye／power stateを古い値へ戻さない。
+* complete LED stateの合成とcommitは既存serialized hardware pathを通す。
+* old audio generationはmouth stateを更新できない。
+
+`CSotaMotion.disabeMouthLEDVoiceSync()`と`CSotaMotion.enabeMouthLEDVoiceSync()`の存在は公開APIで確認済みである。method名の`disabe`／`enabe`はvendor JavaDocどおりのspellingをfacade内で使用し、修正した名称をvendor methodとして記述しない。
+
+current-state getter、disable／enableの冪等性、process crash後・restart後の状態、他process、LED lock、audio playbackとのinteractionはUNKNOWNである。adapterは自分がdisableしたsessionに対してzero、configured restore attempt、unlockを行うresource ownershipを持つ。ただし元状態を取得できないため、元々disabledだった状態へ`enable`を送ってよいかはmanual acceptanceまたはvendor clarificationで決定する。
+
+Case Bについても、mouth brightnessの実機反映、eyes／power LEDとの相互作用、高頻度更新、native voice-syncとの競合、cleanup時の復元は未確認である。これらをGate 1で確認するまで、production VSTONE adapterを実装しない。
 
 ### 9.5 Initial acceptance profile
 
-最初のmanual testは、過去に物理確認された保守的範囲を参考に次から開始する。
+最初のmanual acceptanceはmouth LED、native voice-sync、LED ownership、cleanupだけに限定する。servo motion、torque、full RobotController deployment、integrated motionを含めない。
 
 ```text
-brightness: 0～16
-update interval: approximately 50 ms
-attack: 50 ms程度
-release: 100～150 ms程度
-single short PCM WAV
+Gate 1A: setLED_Sota(...) mouth brightness / zero / eyes and power side effects
+Gate 1B: disabeMouthLEDVoiceSync() / manual update / enabeMouthLEDVoiceSync()
+Gate 1C: 10 Hz -> 20 Hz -> 25 Hz; 50 Hz only if justified
+Gate 1D: mouth zero / configured voice-sync restore / ownership release / resource close
 ```
 
-これは最終製品の固定制限ではない。安全な連続更新、見た目、latency、API負荷を確認した後に変更する。
+brightness値は公式範囲とinstalled runtimeを確認してからsymbolic `ZERO`／`LOW`から設定する。Gate 1のpass／fail、停止条件、未記入evidence templateは`docs/plans/vstone-manual-acceptance-runbook.md`を正とする。
+
+### 9.6 LED lockとprocess lockの責務分離
+
+`CRobotMotion.LockLEDHandle(...)`／`UnLockLEDHandle(...)`の公開API存在はCONFIRMEDである。single-process ownership semanticsはPARTIALLY CONFIRMEDでmanual validationが必要であり、cross-process exclusion、crash recovery、reentrant／duplicate acquisitionはUNKNOWNである。
+
+`SingleInstanceProcessLock`はRobotController process全体の多重起動を防ぐ。VSTONE LED lockはvendor API上のLED ownership／arbitration候補である。前者を取得できても、別VSTONE application、vendor daemon、native voice-syncとのLED競合が防止されたとはみなさない。いずれのlockも他方の代替にせず、VSTONE lockをcross-process mutexとして保証しない。
 
 ## 10. AudioSession lifecycle
 
@@ -471,6 +489,8 @@ Not selected as default。短音声では単純だが、payload sizeに比例し
 13. mouth LEDのperiodic updateをunbounded FIFOへ蓄積しない。
 14. voice-syncを無効化したsessionは、zero、restore、unlockを必ずcleanup pathへ持つ。
 15. public VSTONE APIの実機semanticsを確認前にverifiedと表現しない。
+16. Sota mouth LED IDを推測、legacy mapping、低レベルevidenceからproductionへ転記しない。
+17. full Sota LED poseは単一`LedCoordinator`で合成し、個別producerから直接commitしない。
 
 ## 16. Open questions
 
@@ -479,7 +499,8 @@ Not selected as default。短音声では単純だが、payload sizeに比例し
 * pure `SourceDataLine`と`CWavePlayer`のどちらをproduction defaultにするか
 * supported WAV format setとmaximum duration／payload
 * `disabeMouthLEDVoiceSync()`／`enabeMouthLEDVoiceSync()`のidempotence
-* LED ID 14のkeyed lockと`play(..., lockKey)`の実機semantics
+* Sota mouth-only public LED IDが存在するか。存在する場合のofficial constantとsemantics
+* confirmed対象IDに対するkeyed LED lockと`play(..., lockKey)`の実機semantics
 * safe update rate、brightness range、attack／release curve
 * audioとservo motion同時実行時のlatency
 * crash後のvoice-sync／lock recovery procedure

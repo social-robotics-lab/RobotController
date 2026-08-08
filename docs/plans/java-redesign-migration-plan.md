@@ -100,6 +100,14 @@ VSTONE実装前の境界として、次を完了した。
 
 未完了のまま維持する範囲はVSTONE backend、vendor JAR、real audio output、実mouth LED／voice-sync、Edison deploy、systemd、manual hardware acceptanceである。次phaseはこのcheckpointを維持したまま、公開VSTONE Java API boundaryとmanual acceptance gateを設計する。
 
+### 1.4 2026-08-08 VSTONE public API audit checkpoint
+
+公式JavaDoc、公式Sota sample、公式support情報を、現行`RobotBackend`、`AudioOutput`、`PlaybackClock`と照合した。API surface確認と実機semantics確認を分離したcapability matrixは[`vstone-public-api-capability-matrix.md`](../evidence/vstone-public-api-capability-matrix.md)、人間だけが段階的に実行する未実施runbookは[`vstone-manual-acceptance-runbook.md`](vstone-manual-acceptance-runbook.md)を正とする。
+
+Sota mouth LED ID `14`の旧仮定は撤回する。公開JavaDocで確認できるID 14はCommUのmouth servoであり、Sota mouth-only IDはUNKNOWNである。公開確認済みの`setLED_Sota`によるfull LED pose coordinationを保守的候補とし、vendor JAR provenance/version/SHA/license、installed signature、brightness、voice-sync、lock、audio playheadをmanual gateに維持する。このcheckpointではsource、dependency、Maven profile、実機状態を変更しない。
+
+Case Bでは`LedCoordinator`がeye、mouth、power LEDの全logical stateを単一所有し、mouth producerから`setLED_Sota(...)`を直接呼ばない。`SingleInstanceProcessLock`はRobotController多重起動防止、VSTONE LED lockはvendor ownership候補として分離し、いずれも他方の保証に代用しない。次の実装判断は、人間がrunbookのGate 1A～1Dを実施し、mouth brightness、voice-sync、10～25 Hz、他LED保持、cleanup、ownershipのminimum passを満たした結果を入力として行う。
+
 ## 2. Target repository layout
 
 ```text
@@ -574,7 +582,7 @@ completion
 
 ### Goal
 
-公式Java APIだけを使い、Sota／CommU／Dog adapterおよびSota mouth LED primitiveを実装する。
+Gate 1のhuman acceptanceがpassしたcapabilityだけについて、公式Java APIを使うSota adapterを実装する。CommU／Dogはrobot固有の公式capabilityが確認された後の別incrementとする。
 
 ### Actions
 
@@ -584,16 +592,20 @@ completion
 * existing converter rangeとgear ratioをprofileへ移す。
 * initialize、read axes、apply pose、LED、closeをadapter化する。
 * `getDefaultIDs()`と`getReadpos()`の対応を使い、配列順を独自推測しない。
-* Sota mouth LED primitiveを次の公開API候補で実装する。
+* Sota mouth controlは、公開確認済みの全LED poseを一つのcoordinatorが所有するCase Bを保守的候補とする。
 
 ```text
-LockLEDHandle(lockKey, [14])
+acquire confirmed LED ownership
 disabeMouthLEDVoiceSync()
-CRobotPose.SetLed({14 -> value})
+CRobotPose.setLED_Sota(complete validated LED state)
 play(pose, transitionMs, lockKey)
+mouth zero while ownership is valid
 enabeMouthLEDVoiceSync()
-UnLockLEDHandle(lockKey, [14])
+release confirmed LED ownership
 ```
+
+* mouth-only `SetLed`はSotaの公式IDと他LED保持semanticsが確認されるまで実装しない。
+* native voice-syncのcurrent-state getterは公開確認できないため、未知の元状態を復元済みと表現しない。
 
 * lock／play return valueとexceptionをtyped backend errorへ変換する。
 * unsupported semanticsを成功として扱わない。
@@ -603,7 +615,7 @@ UnLockLEDHandle(lockKey, [14])
 * adapter mapping
 * profile completeness
 * no vendor import outside VSTONE module
-* mouth LED ID 14 mapping
+* confirmed robot-specific LED mapping。Sota IDを推測で固定しない
 * cleanup call order with facade／fake
 * exception translation
 * Java 8 compile
@@ -614,6 +626,7 @@ UnLockLEDHandle(lockKey, [14])
 * backendごとのsupported／unsupported operationが明示されている。
 * vendor内部実装へ依存しない。
 * 実機で確認していないbehaviorはunverifiedと明示されている。
+* Sota mouth adapter着手前にGate 1A～1Dのhuman evidenceがreview済みである。
 
 ## 16. Phase 12 — Integrated audio + mouth LED session
 
@@ -770,7 +783,11 @@ unit／integration testで確認できないJava Sound、VSTONE API、実機timi
 2. read-only axes
 3. controlled shutdown
 
-### Order B: audio without manual mouth control
+### Order B: Manual Gate 1 — mouth LED / voice-sync / ownership
+
+[`vstone-manual-acceptance-runbook.md`](vstone-manual-acceptance-runbook.md)のGate 1A～1Dだけを実施する。servo motion、torque、full deployment、integrated motionを含めない。10 Hz、20 Hz、25 Hzの順で必要rateを確認し、50 Hzは明示的な必要性と追加reviewがある場合だけ候補とする。
+
+### Order C: audio without manual mouth control
 
 1. short supported PCM WAVをmemoryから再生
 2. temporary fileが作られないことを確認
@@ -778,20 +795,10 @@ unit／integration testで確認できないJava Sound、VSTONE API、実機timi
 4. completion、stop、replacementを確認
 5. playback positionの単調性とおおよそのlatencyを記録
 
-### Order C: mouth LED primitive
-
-1. LED ID 14 ownership取得だけを確認
-2. native mouth voice-sync disableの効果を確認
-3. brightness 1～16の単発低輝度pulse
-4. zero復帰
-5. native voice-sync restore
-6. unlock
-7. postflightで通常状態を確認
-
 ### Order D: integrated short lip-sync
 
 1. short mono PCM WAV
-2. 50 ms update、brightness 0～16
+2. Gate 1で承認された最小update rateとbrightness範囲
 3. stop
 4. replacement
 5. silence section
