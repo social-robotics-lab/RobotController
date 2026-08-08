@@ -1,8 +1,57 @@
 # docs/architecture.md
 
-## 1. 文書の目的
+## 1. 文書の目的と現行方針
 
-本書は、Python版RobotControllerの内部アーキテクチャ、責務分割、依存関係、並行処理、状態管理および拡張方法を定義する。
+本書はRobotControllerの内部アーキテクチャ、責務分割、依存関係、並行処理、状態管理および拡張方法を定義する。
+
+production targetは`docs/decisions/adr-java-only-redesign.md`に従うJava 8単一process applicationであり、新実装は`java_server/`に置く。本書のうちPython production server、AppManager／VSMD direct write、一時WAV file、`aplay`を前提とする既存節はhistorical design recordであり、現行Java設計の根拠としてADRまたは`docs/plans/java-redesign-migration-plan.md`より優先しない。
+
+### 1.1 2026-08-08 Java application slice
+
+現在実装済みのhardware-free経路は次のとおりである。
+
+```text
+Main / explicit configuration
+  -> SingleInstanceProcessLock (FileChannel / non-blocking tryLock)
+  -> RobotControllerApplication lifecycle owner
+  -> backend initialize on SerializedHardwareWorker
+  -> ready
+  -> BoundedTcpServer bind / accept
+  -> LegacyConnectionHandler
+  -> FrameCodec + strict UTF-8 / JSON / WAV validation
+  -> ApplicationCommandDispatcher
+     |- Motion / Pose / Idle generation scheduler
+     |- SerializedHardwareWorker (bounded, single thread)
+     |    `- RobotBackend
+     `- AudioSessionCoordinator (bounded, separate owned thread)
+          |- canonical PcmAudioData -> AudioOutput / AudioPlaybackSession
+          |- same canonical PcmAudioData -> MouthEnvelopeAnalyzer
+          |- PlaybackClock.playedFrames() -> current envelope window
+          `- LatestHardwareCommandMailbox -> SerializedHardwareWorker -> MOUTH LED
+```
+
+所有権と上限は次のように固定する。
+
+* `ServerSocket`とaccept threadは`BoundedTcpServer`が所有する。
+* accepted socketはconnection executorへの投入前からserverが追跡し、rejection、handler完了、shutdownの全経路でcloseする。
+* connection executorはfixed worker数とbounded queueを持ち、overflow時はそのsocketだけをcloseする。
+* `RobotBackend`のinitialize、Pose、read、stop、closeはsingle `SerializedHardwareWorker`から実行する。
+* hardware queueはboundedであり、enqueue時のtokenに加えてbackend call直前にもgenerationを検証する。
+* Motion、direct Pose、Idle Motionは同じ`MOTION` generationを共有し、replacementまたはstopで旧世代を無効化する。
+* strict WAV validationはmemory内で一度だけcanonical `PcmAudioData`へdecodeする。coordinatorは同じimmutable objectをaudio outputとmouth envelope解析の両方へ渡し、再decodeしない。
+* audioは`AUDIO` generationとbounded single coordinator workerを使い、blocking session lifecycleでrobot hardware workerを占有しない。
+* mouth synchronizerのperiodic wakeupは時間windowをFIFOで進めず、毎回`PlaybackClock.playedFrames()`を読み、現在のplayheadに対応するbrightnessだけを選ぶ。
+* `LatestHardwareCommandMailbox`はdrain task最大1件と置換可能なpending値最大1件だけを保持する。mouth backend callは通常commandと同じ`SerializedHardwareWorker`上で実行され、選択時にもaudio generationを再検証する。
+* hardware-independent default envelopeは20 ms window、noise gate 0.02、gain 2.0、compression exponent 0.5、attack 40 ms、release 100 ms、brightness 0..16である。hardware固有curveへの変換は将来adapterの責務とする。
+* replacementは旧generation無効化、synchronizer cancel、pending clear、owned playback stop、generation-aware mouth zero、resource close、新session startの順で行う。
+* normal completion、stop、playback／clock／mouth output failure、shutdownはpending clearとbest-effort mouth zeroを含む共通cleanupへ収束する。旧completionのzero commandもhardware実行直前のgeneration checkで新sessionへ作用できない。
+* shutdownはlisten／active socket、motion、audio generation／playback／mouth、全generation、backend、hardware workerの順に閉じる。
+
+Mock compositionは明示的な`--backend=mock`選択時だけ利用できる。`--backend=vstone`はvendor object、vendor JAR、listen socketを生成する前に起動失敗する。Mockのlogical `MOUTH` writeはcoordinatorとserializationのtest oracleであり、VSTONE adapter、real audio output、LED lock／native voice-sync、actual mouth LEDは未実装である。Mock testの成功を実機semanticsの確認とはみなさない。
+
+process lock pathはcommand-line設定から取得し、既定値は`java.io.tmpdir`直下の`robot-controller.lock`をabsolute／normalized pathとして使用する。親directoryは自動作成せず、`tryLock()`競合時はretry、sleep、lock file削除を行わない。applicationがchannelと`FileLock`を所有し、startup failureまたは通常shutdownの最後にrelease／closeする。pathnameはunlinkしない。このlockは同じpathとadvisory lock規約へ参加するprocess間だけを調停する。
+
+Maven packageは`target/robot-controller-dist/`へthin `RobotController.jar`、runtime `lib/`、command-line option説明を含む`config/`を生成する。artifactはrepository外absolute path、vendor JAR、hardware resourceを含めない。Mock smokeは配布directoryをworking directoryとして実行する。
 
 ## 2. 設計原則
 

@@ -10,6 +10,24 @@
 
 Python版は、正常に構成された既存クライアントの正常系動作を維持する。
 
+2026-08-08時点では、同じlegacy v1 contractを`java_server/`の新Java実装にも適用する。`FrameCodec`、`LegacyV1Command`、`LegacyCommandDecoder`、`LegacyCommandValidator`、`LegacyConnectionHandler`およびMock TCP integration testがこのcontractを固定する。
+
+新Java実装では次を確認済みである。
+
+* command frame 64 bytes、JSON frame 1 MiB、WAV frame 20 MiBを初期既定値とするcommand-specific上限
+* 9 commandすべてのraw TCP normal path、payload有無、no-ACK／`read_axes` response contract
+* header EOF 0..3 bytes、signed negative、`0x7fffffff`、configured maximum／maximum+1、truncation、invalid UTF-8／JSON、payload過不足のconnection-local rejection
+
+上記は`LegacyV1WireCompatibilityIntegrationTest`、`LegacyV1MalformedInputIntegrationTest`、`FrameCodecTest`および`LegacyCommandValidatorTest`で固定する。不正入力にv1 error responseを追加せず、そのconnectionだけを閉じ、後続の正常connectionを処理できることを確認する。
+* allocation前のnegative／oversized length拒否、partial read、EOF、length 0
+* command／JSONのstrict UTF-8、duplicate JSON key、non-standard number、型／範囲／profile名の拒否
+* required payload不足と、処理時点ですでにbuffer済みのunexpected extra frameの拒否
+* `read_axes`だけが1個のUTF-8 JSON response frameを返すこと
+* その他8個のv1 commandは成功・validation error・backend errorのいずれでもACK／error frameを返さないこと
+* 1接続のprotocol error、queue saturation、backend exceptionがserver processを停止させないこと
+
+TCPではpeerが将来送信するbyteの有無を事前に確定できないため、extra-frame検出は必要frame読了時にsocketへ到着済みのbyteを対象とする。正式な利用方法は引き続き1 connection 1 commandであり、必要frame処理後はserverがconnectionをcloseする。
+
 本書で互換性があるとは、正常な既存クライアントが送るバイト列を受理し、同じコマンド効果を発生させ、v1では`read_axes`だけが応答を返すことをいう。
 
 以下は互換性の対象とする。
@@ -296,9 +314,10 @@ MotionはPose JSONの配列である。
 
 * 長さが0ではない
 * 最大WAVサイズ以下
-* RIFF/WAVEとして最低限妥当
-* 一時ファイルへ安全に保存可能
-* ディスク空き容量または保存失敗を処理可能
+* RIFF/WAVE container、PCM codec、channel数、sample rate、sample size、frame alignmentが対応範囲内
+* decode後canonical PCM sizeとdurationが設定上限以下
+
+新Java実装はWAVをmemory上でcanonical PCMへdecodeし、一時fileまたは外部再生processを使用しない。古い一時file／disk capacity要件はPython production案のhistorical記述であり、現行Java contractではない。
 
 v1では再生成功を示すACKは返さない。
 
@@ -385,6 +404,8 @@ TCPの1回の `recv()` が、要求した全バイトを返すと仮定しては
 | `read_axes` response frame header/body | 5 seconds |
 
 Session層はコマンド種別に応じてペイロードのタイムアウトを選択し、応答送信時も対応するタイムアウトを適用する。Frame Codecはコマンド種別を認識しない。各値は絶対期限ではなく、各ブロッキングsocket操作の無通信タイムアウトであり、処理後は呼び出し前のsocket timeoutへ復元する。
+
+2026-08-08の新Java hardware-free checkpointは、既存の単一`--socket-timeout-ms`を全frameとcommand waitへ適用し、既定値を5 secondsとしている。WAVだけを30 secondsに分離する上記記述はPython-eraの設計案であり、新Javaへ未実装である。既存clientの大容量WAV転送要件を実測するまで、独断で新しいtimeout項目または値へ変更しない。
 
 ## 15. 互換性テスト
 

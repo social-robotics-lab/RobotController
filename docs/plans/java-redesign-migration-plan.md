@@ -1,7 +1,7 @@
 # RobotController Java再実装 段階的移行計画
 
 作成日: 2026-08-03 JST
-更新日: 2026-08-04 JST
+更新日: 2026-08-08 JST
 前提ADR: `adr-java-only-redesign.md`
 方針: greenfield implementation / legacy-spec preservation / small-step migration / hardware-safe
 
@@ -35,6 +35,70 @@ document contract
 ```
 
 実機を使うphaseは最後に限定し、自動エージェントは実行しない。
+
+### 1.1 2026-08-08 implementation checkpoint
+
+hardware-free application sliceとして、Phase 2／3／4の必要部分、Phase 8／9／10のapplication skeleton、およびPhase 14のMock packaging skeletonを実装した。
+
+完了した範囲:
+
+* explicit configuration、composition root、lifecycle owner、`Main`
+* backend `ready`後のTCP bind
+* bounded connection executorとcontrolled socket shutdown
+* legacy frame、strict UTF-8、dependency-free strict JSON、command／profile validation
+* bounded single hardware worker、exception containment、generation再検査
+* Pose／Motion／legacy Sota idle sequenceのreplacementとidempotent stop
+* Mock audio sessionの別owned workerとin-memory WAV validation
+* Mock backendまでのlocalhost TCP integration testとlegacy response contract
+* thin executable `RobotController.jar` + internal module `lib/` layout
+
+このcheckpointで未完了の範囲:
+
+* VSTONE backendとvendor JAR解決
+* real audio output、VSTONE mouth LED ownership／voice-sync
+* robot別production profileとCommU／Dog idle integration
+* 実機上のrunning interpolation stop semantics
+* Edison packaging、deploy、systemd、manual hardware acceptance
+
+したがって本checkpointはJava再実装全体またはproduction readinessの完了を意味しない。
+
+### 1.2 2026-08-08 audio session checkpoint
+
+Phase 10／12のうちVSTONE非依存部分を追加実装した。
+
+完了した範囲:
+
+* `AudioSessionCoordinator`によるaudio generation、playback、mouth synchronization、replacement、stop、failure、shutdownのownership
+* strict validationで一度だけ生成したcanonical PCMをplaybackとenvelope解析へ共有
+* `PlaybackClock.playedFrames()`を基準にした現在window選択
+* pending値最大1件の`LatestHardwareCommandMailbox`とsingle hardware worker経由のlogical `MOUTH` write
+* completion／replacement raceを含むexecute直前generation rejection
+* normal completion、repeated stop、open／playhead／mouth output failure、application shutdownのmouth zeroとresource close
+* manual scheduler、Mock playhead、latch／execution hookによる実時間sleep非依存test
+* legacy `play_wav` TCPからMock audio／mouthまでのno-ACK integration test
+
+未完了の範囲:
+
+* Java SoundまたはVSTONE公開APIによるreal audio output
+* VSTONE mouth LED adapter、LED ownership、native voice-sync disable／restore、hardware固有brightness mapping
+* adapter failure時のhardware lifecycle degraded／failed方針
+* Edisonおよび実機でのplayhead精度、LED更新、安全な継続動作のmanual acceptance
+
+このcheckpointのlogical `MOUTH`出力はMock観測用であり、Sota mouth LED実機可否の確認ではない。
+
+### 1.3 2026-08-08 hardware-free hardening checkpoint
+
+VSTONE実装前の境界として、次を完了した。
+
+* legacy v1全9 commandのraw wire normal-path testと`read_axes` semantic response確認
+* signed 4-byte length、EOF、configured exact limit／limit+1、UTF-8、JSON、payload過不足、numeric／collection boundaryの固定corpus
+* command-line設定値の既定値・明示値・不正値test。`--listen-port=0`は`--smoke-test`専用
+* Java NIO `FileChannel.tryLock()`を使うconfigurable single-instance lockと、競合／backend init／TCP bind failureのrelease test
+* startup順序をconfig validation → process lock → backend init → ready → listenへ固定
+* thin JAR、runtime `lib/`、CLI説明`config/`からなる`robot-controller-dist/`
+* effective configurationとlifecycle遷移のpayload非出力startup logging
+
+未完了のまま維持する範囲はVSTONE backend、vendor JAR、real audio output、実mouth LED／voice-sync、Edison deploy、systemd、manual hardware acceptanceである。次phaseはこのcheckpointを維持したまま、公開VSTONE Java API boundaryとmanual acceptance gateを設計する。
 
 ## 2. Target repository layout
 

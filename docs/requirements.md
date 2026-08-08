@@ -1,5 +1,13 @@
 # docs/requirements.md
 
+## 0. 現行方針（Java-only redesign）
+
+本書に残るPython production server、一時WAVファイル、外部再生process、`FcntlProcessLock`を前提とする記述はhistorical designである。現行要件は`docs/decisions/adr-java-only-redesign.md`と`docs/plans/java-redesign-migration-plan.md`を優先し、production targetを`java_server/`のJava 8 applicationとする。
+
+2026-08-08時点のhardware-free applicationは、command-line設定を完全検証した後、`FileChannel.tryLock()`による設定可能なOS advisory process lockを取得し、Mock backend初期化、`ready`遷移、TCP listenの順で起動する。競合、lock open失敗、backend初期化失敗、TCP bind失敗はfail-closedとし、取得済みresourceを逆順に解放する。lock fileは通常終了時にunlinkしない。
+
+default build／test／smokeはMock backendとMock audioだけを使用し、VSTONE、実audio device、AppManager、VSMD、実機deviceへ接続しない。現時点の成果物はhardware-free hardening checkpointであり、production-readyまたは実機安全性確認済みではない。
+
 ## 1. 文書の目的
 
 本書は、Python版RobotControllerが満たすべき機能要件、非機能要件、安全要件、互換性要件および受入条件を定義する。
@@ -105,6 +113,8 @@ pytestはPython 3.6対応版を固定する。初期候補は`pytest==6.2.5`と�
 
 初期版はバックエンドの初期化が成功し、ライフサイクル状態が`ready`へ遷移してからTCP listenを開始する。
 
+現行Java実装の起動順は、command-line設定load／validation、single-instance process lock、backend初期化、`ready`、TCP listenとする。process lockの取得前にbackend初期化またはlistenを行わない。
+
 ### FR-002 ロボット種別の選択
 
 設定によって、少なくとも以下を選択できること。
@@ -192,11 +202,13 @@ WAVバイナリを受信し、ロボット側の音声出力で再生する。
 サーバーは次を行う。
 
 * 最大サイズの検証
-* 最低限のWAVヘッダ検証
-* 一意な一時ファイルの作成
-* サーバー自身が起動した再生プロセスの追跡
-* 再生終了後のファイル削除
+* RIFF/WAVE container、PCM codec、channel数、sample rate、sample size、frame alignmentの検証
+* memory上でのcanonical PCMへのdecodeとdecode後duration上限の検証
+* 同じcanonical PCMのplaybackとmouth envelope解析への共有
+* applicationが所有するaudio session、generation、playback resourceの追跡
 * 新しい音声要求を受けた場合の方針に従った置換または拒否
+
+normal pathで一時WAV file、`aplay`、固定名fileまたは外部processを使用しない。
 
 ### FR-012 `stop_wav`
 
