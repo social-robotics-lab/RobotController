@@ -2,9 +2,40 @@
 
 ## 1. Status、目的、実行権限
 
-**Status: PROBE PREPARATION ALLOWED / MANUAL EXECUTION HUMAN-ONLY / NOT EXECUTED**
+**Status: DIAGNOSTIC REVISION PREPARATION ALLOWED / MANUAL EXECUTION HUMAN-ONLY**
 
-**Production adapter: BLOCKED UNTIL GATE 1 PASS.** [`manual_tests/vstone-gate1/`](../../manual_tests/vstone-gate1/README.md)に、全default servoをkey付きlockでguardし、異なるkeyのLED-only `play(...)`を人間が一stepずつ実行するbounded probeを用意した。このguardはvendorによるLED-only無副作用保証ではない。source review、physical preflight、installed JARでのcompile、人間の明示的opt-inが完了するまで実行承認とみなさない。
+**Production adapter: BLOCKED UNTIL GATE 1 PASS.** [`manual_tests/vstone-gate1/`](../../manual_tests/vstone-gate1/README.md)の現revisionは、Gate 1Bでnative voice-sync disable後もmouth／eyes／powerのvisible changeがなかった観測を受け、derived LED ID setのkey付きlockだけを新しい変数とするoption 10～12を限定的に追加する。option 5と9はinteractive menuからblockされる。source review、physical preflight、installed JARでのcompile、人間の明示的opt-inが完了するまで実行承認とみなさない。
+
+ユーザー提供のmanual run logに基づく現在のcheckpointは次のとおりである。
+
+```text
+Gate 1A-0: PASS observed once
+Default servo IDs count: 8
+LockServoHandle: success
+Previous option 3: ABORT
+Current option 3 diagnostic: COMPLETED
+Before: servo=null, torque=null, LED=null
+After setLED_Sota: servo=null, torque=null, LED size=10
+Observed with LOW=64: LED entry id=14,value=64
+Gate 1A-1 play(): EXECUTED ONCE with LOW=64; returned true
+Gate 1A-1 servo movement: OBSERVED NONE
+Gate 1A-1 visible mouth/eyes/power response: OBSERVED NO CHANGE
+Gate 1A-1 Java exception: NONE
+Gate 1A-1 servo safety: PASS / OBSERVED NO MOVEMENT
+Gate 1A mouth control: NOT CONFIRMED
+Gate 1A overall: NOT PASSED
+Gate 1B disable call: RETURNED NORMALLY
+Gate 1B play after disable: returned true
+Gate 1B servo movement / unexpected sound: NO / NO
+Gate 1B visible mouth/eyes/power response: NO / NO / NO
+Gate 1B configured enable call: RETURNED NORMALLY
+Gate 1B: DIAGNOSTIC OBSERVATION ONLY
+LED ownership / lock: UNKNOWN — next manual test
+Gate 1 pose structural assumption: INVALIDATED
+Next human workflow: 1 -> 2 -> 3 -> 4 -> 6 -> 7 -> 10 -> 11 -> 12 -> 8 -> c
+```
+
+無効になった仮定は「`new CRobotPose()`直後のservo／torque mapはnon-nullかつempty」である。tested runtimeでは両mapが`null`だったため、`null OR empty`をservo／torque command dataなしとして扱う。ID 14／value 64はtested runtimeでLOW=64を設定した際のOBSERVED map entryであり、公式public ID specificationではない。
 
 本runbookは、Sota上の公式VSTONE Java APIについて、静的資料だけでは確定できないsemanticsを人間のoperatorが段階的に確認するための候補手順である。Codexを含む自動エージェントは、本書の手順、deploy、実機test、device access、servo、LED、audio output、service操作を実行してはならない。
 
@@ -87,17 +118,31 @@ signature不一致が一つでもあればwrite testへ進まず、installed ver
 
 最初のmanual acceptanceはこのGate 1だけに限定する。servo motion、torque変更、full RobotController deployment、production adapter、motionとの同時実行、Dog／CommUを含めない。Phase Aの最小initializationを通過した後、次の1A～1Dを一つずつ人間が開始する。
 
-probe preparationは許可するが、manual resultは未確定である。初回sessionはGate 1A-0と1A-1だけに限定し、そこで人間がPASSを記録するまでbrightness、voice-sync、rate testを開始しない。
+現在推奨するhuman workflowは **option 1 → 2 → 3 → 4 → 6 → 7 → 10 → 11 → 12 → 8 → c → STOP** だけである。option 7はvoice-sync OFF／LED lockなしbaseline、option 11はvoice-sync OFF／derived LED lockありcomparisonである。LED-lock diagnostic中はoption 7直後にoption 8を実行しない。brightnessのoption 5とrate testのoption 9は開始しない。
 
 ### Gate 1A-0 — All-default-servo guard
 
 `Connect()`と`InitRobot_Sota()`の後、`getDefaultIDs()`がnon-null、non-empty、全要素non-nullであることを確認する。全IDを専用servo guard keyで`LockServoHandle(...)`し、falseまたはexceptionならLED writeなしでABORTする。guard取得だけをPASSとして記録し、servo非動作を自動判定しない。
 
+ユーザー提供のmanual runではdefault servo ID count 8とlock successが観測され、Gate 1A-0は一度PASSした。この観測は保持するが、lockの一般的semanticsや実機安全性へ一般化しない。
+
+### Option 3 diagnostic — CRobotPose software structure
+
+全default servo guard取得後、新しい`CRobotPose`を作り、公開getterの`getPose()`、`getTorque()`、`getLed()`が返すmapをそれぞれcopyする。sizeと全key/valueを`BEFORE setLED_Sota`として表示し、local objectへ`setLED_Sota(...)`だけを適用して同じmapを再度copyし、`AFTER setLED_Sota`として表示する。before/afterの等価性、added keys、removed keys、changed valuesを計算する。iteration orderはsemanticとして扱わない。
+
+このdiagnosticは`motion.play()`、servo write、torque write、LED hardware write、voice-sync変更を行わない。`setLED_Sota()`はlocal `CRobotPose` mutationだけに使用する。option 3が正常完了した場合だけoption 4へ進める。
+
+tested runtimeでは、beforeのservo／torque／LED mapはすべて`null`、afterのservo／torque mapも`null`、LED mapはsize 10と観測された。servo／torque mapはbefore/afterでequal、LED mapはnot equalだった。configured LOW=64に対して`id=14,value=64`がLED map内に観測された。これはinstalled runtimeの観測値に限定し、公式IDへ一般化しない。
+
 ### Gate 1A-1 — Single guarded LED-only update
 
-新しい`CRobotPose`についてLED設定前後と`play`直前にservo mapとtorque mapが空であることを確認する。servo guardと異なるkeyをkey付き`play(...)`へ渡し、operatorがENTERで開始する一回だけのlow updateを行う。servo movementが少しでも観測された場合はFAILとし、以降を実行しない。
+**EXECUTED ONCE / SERVO SAFETY OBSERVED PASS / MOUTH CONTROL NOT CONFIRMED.** 既存runでは、LOW=64の`motion.play(pose, TRANSITION_MSEC, LED_TEST_KEY)`が`true`を返し、servo movementは観測されず、mouthのvisible changeも観測されず、Java exceptionもなかった。これは一回のoperator observationであり、LED-only `play`の一般的なservo無副作用保証ではない。
+
+現revisionのoption 4は再現時も同じguardとone-shot条件を維持する。play return後はservo movement、unexpected servo sound、mouth visible changeを順に明示的yes/noで取得し、eyes／powerはfree textで取得する。movementまたはsoundがYESならFAILとし、cleanup mouth-zeroを含む追加`play()`をsuppressionする。movement／soundがNOならservo safetyだけをPASSとし、mouth responseやGate 1A全体へ広げない。
 
 ### Gate 1A-2 — Mouth brightness steps
+
+**BLOCKED in the current probe revision (option 5).** The following remains future acceptance scope only.
 
 `setLED_Sota(...)`と`play(...)`の公開APIだけを使用し、次を確認する。
 
@@ -109,15 +154,34 @@ probe preparationは許可するが、manual resultは未確定である。初�
 
 ### Gate 1B — Native voice-sync
 
-exact vendor spellingの`disabeMouthLEDVoiceSync()`が機能し、disable中のmanual mouth updateがnative側から上書きされないことを確認する。最後に`enabeMouthLEDVoiceSync()`でpreflightに定めたconfigured targetへ戻せることを確認する。current-state getterがないため、未知の元状態を復元したとは記録しない。
+**EXECUTED / DIAGNOSTIC OBSERVATION ONLY.** `disabeMouthLEDVoiceSync()`はnormal returnし、同じLOW updateの`play()`も`true`を返した。operatorはservo movementなし、unexpected servo soundなし、mouth／eyes／power visible changeなしを観測し、最後の`enabeMouthLEDVoiceSync()`もnormal returnした。
+
+1. option 6はGate 1A-1 servo safety PASS、guard保持、suppressionなしを要求し、ownership stateをcall前に記録してからexact vendor spellingの`disabeMouthLEDVoiceSync()`を一回だけ呼ぶ。`play()`、`setLED_Sota()+play()`、LED lock、direct ID 14 writeは行わない。
+2. option 7はdisable attempted、normal return、restore pending、未実行を要求し、option 4と同じLOW条件を同じshared helperから一回だけ`play(...)`する。pre-playでvoice-sync状態がgetter不在のためUNKNOWNであることを表示する。実測ではreturn `true`でもvisible LED changeはなかった。
+3. option 7はservo movement、unexpected servo sound、mouth visible change、eyes、powerをこの順で記録する。movementまたはsoundがYESならcleanup zeroを含む後続LED playをsuppressionするが、configured enable fallback、guard release、disconnectは継続する。
+4. option 8はmouth changeのYES／NOにかかわらず`enabeMouthLEDVoiceSync()`を一回要求し、normal return後だけrestore pendingをclearする。これは元状態を復元した証明ではない。
+5. Gate 1A-1 servo safety、Gate 1A-1 visible response、disable attempt、Gate 1B manual response、configured enable returnを独立して表示し、Gate 1AまたはGate 1Bの広いPASS booleanへまとめない。native voice-sync disable単独ではmanual updateをvisibleにできず、voice-syncだけが原因という仮説は今回支持されなかった。
+
+### Gate 1L — Derived LED ownership / lock diagnostic
+
+**LIMITED SEQUENCE ENABLED / NOT EXECUTED.** Temporary Gate 1Lは`LockLEDHandle`だけを新しい変数とし、4引数`play(..., ledposcheck)`、brightness、rate、direct LED ID writeを含めない。
+
+1. option 10はoption 7完了、voice-sync restore pending、servo safety PASS、suppressionなしを要求する。fresh `CRobotPose`へ`setLED_Sota(...LOW...)`を適用し、servo／torque null-or-emptyとLED non-emptyを確認して、`getLed().keySet()`から重複／nullのない`Byte[]`を生成する。数値IDをhard-codeしない。
+2. operatorへderived ID、`SERVO_GUARD_KEY`、`LED_TEST_KEY`を表示する。servo guard keyとfuture play keyは異なり、LED lock keyとfuture play keyは一致する。ENTER後、`LockLEDHandle(LED_TEST_KEY, derivedIds)`を一回だけ呼び、option 10では`play()`しない。false／exception時はfail-closed、retryなし、option 11禁止とする。
+3. option 11はlock成功と同じvoice-sync OFF状態を要求する。fresh LOW poseのcurrent LED key setとoption 10で保存したlocked setを順序非依存で比較し、不一致ならplay前にABORTする。一致時だけ既存3引数`play(pose, 1000, LED_TEST_KEY)`を一回呼ぶ。
+4. play直後にservo movement、unexpected servo sound、mouth、eyes、powerを明示的yes/noで記録する。movement／soundがYESならcleanup zeroをsuppressionするが、LED unlock、voice-sync enable、servo unlock、disconnectを続ける。
+5. visible changeがあれば「same-key LED lock後にvisible behaviorが変わった」とだけ記録し、sole root causeとは断定しない。すべてNOなら「LED lock alone did not make the update visible」と記録できる。4引数playはpotential later diagnosticに留め、今回使用しない。
+6. option 12はoption 10で実際にlockしたkeyとID cloneを`UnLockLEDHandle(...)`へ渡す。normal return後だけowned stateをclearする。実行されなければcleanup fallbackがbest effort releaseする。
 
 ### Gate 1C — Update rate
+
+**BLOCKED in the current probe revision (option 9).** The following remains future acceptance scope only.
 
 `ZERO`～`LOW`の範囲で **10 Hz → 20 Hz → 25 Hz** を独立sessionとして確認する。Guarded Gate 1 probeでは50 Hz、arbitrary rate、unbounded durationを禁止する。高頻度探索を目的にせず、queue lag、commit latency、flicker、他LED stateを記録する。
 
 ### Gate 1D — Cleanup and guarded resource ownership
 
-normal completion、operator stop、一つの承認済みerror caseで、mouth `ZERO`、configured voice-sync enable attempt、probeが取得したall-default-servo guardのrelease、`Disconnect()`を個別に確認する。Sota LED lock対象を推測せず、LED ownership semanticsはGate 1後の別gateとして扱う。
+normal completion、operator stop、一つの承認済みerror caseで、mouth `ZERO`、owned derived LED lock release、configured voice-sync enable attempt、all-default-servo guard release、`Disconnect()`を個別に確認する。Gate 1LのLED IDsはfresh `setLED_Sota()` poseから導出し、数値IDまたはmouth-only IDを推測しない。lock semanticsの一般化はGate 1L evidence review後も別判断とする。
 
 ### Gate 1 pass / fail criteria
 
@@ -173,12 +237,11 @@ Gate 1全体のminimum passは次のすべてを満たすことである。
 
 1. baselineのeyes、mouth、power LED、native voice-sync、audio状態を記録する。
 2. 全default servo guardを取得し、guard keyとplay keyが異なることを確認する。
-3. 新規poseのservo／torque mapがLED設定前後で空、LED mapがnon-emptyであることを確認する。
-4. Gate 1A-1として`LOW`を一回だけcommitし、mouth以外のLED、servo、torque、audioに変化がないことを確認する。
-5. Gate 1A-1を人間がPASSとした場合だけ、`ZERO`、`LOW`、`MEDIUM`、`HIGH`、`ZERO`を各ENTER入力で一つずつ試す。
-6. 各step直前に新規poseとstructural checkを繰り返し、servo movement、眩しさ、発熱、flickerがあれば直ちに終了する。
-7. Gate 1Bではnative voice-sync disableを一回試み、manual updateを一回観測した後、configured enableを一回試みる。
-8. cleanupで`ZERO`、configured enable、servo guard release、`Disconnect()`をbest effortで行う。
+3. option 3で新規poseのservo／torque／LED mapを`setLED_Sota(...)`前後にcopyし、size、entry、等価性、added／removed／changedを表示する。servo／torque mapの`null OR empty`をcommand dataなしとして扱う。
+4. option 4でguard、異なるkey、map invariant、configured LOWを確認し、ENTER後にone low updateを一回だけcommitする。
+5. servo movementを最優先で回答し、YESならFAILとして追加`play()`を禁止する。NOでもremaining observationを記録してSTOPする。
+6. Gate 1A-2以降のwrite sequenceは現在すべてBLOCKEDとする。
+7. cleanupで必要なmouth-zero、servo guard releaseと`Disconnect()`をbest effortで行い、post-cleanup exceptionを含めて記録する。
 
 eyesまたはpower LEDが変化した場合はCase Bのstate coordination不足として不合格にし、部分updateを推測で試さない。
 
@@ -267,15 +330,20 @@ normal、false return、exception、operator stopの全経路で次をbest effor
 
 1. future update generationを無効化する
 2. periodic producerとpending mailboxを停止・clearする
-3. mouth `ZERO`を、guardがまだ有効でservo movementが報告されていない場合だけ一回commitする
-4. owned audio playbackをstopし、owned resourceをcloseする
-5. configured native voice-sync targetをrestoreする
-6. guarded probeではowned all-default-servo guard、future production gateではowned LED lockをreleaseする
-7. `CRobotMem.Disconnect()`を行う
-8. process lockをreleaseする。lock pathnameをunlinkしない
-9. thread/process/resource残存とrobot状態をoperatorが確認する
+3. mouth `ZERO`を、guardがまだ有効でservo movementもunexpected servo soundも報告されていない場合だけ、`Cleanup mouth zero — not part of LED-lock diagnostic measurement`として一回commitする。LED lock保持中はlocked/current ID集合を再確認し、unlock前に同じkeyで行う
+4. guarded probeがowned LED lockを保持していれば、保存したkey／ID cloneでreleaseする
+5. owned audio playbackをstopし、owned resourceをcloseする
+6. configured native voice-sync targetをrestoreする
+7. guarded probeではowned all-default-servo guard、future production gateではその他のowned lockをreleaseする
+8. `CRobotMem.Disconnect()`を行う
+9. process lockをreleaseする。lock pathnameをunlinkしない
+10. thread/process/resource残存とrobot状態をoperatorが確認する
 
 cleanup順序はmanual結果により変更し得る。VSTONEへの追加問い合わせは任意のrisk-reduction手段であり、Gate 1 probe実行の必須解除条件ではない。現在状態をqueryできないため、voice-syncの「復元」はpreflightで明示したconfigured targetへの設定を意味し、未知の元状態を復元したとは表現しない。
+
+二回以上のmanual runで、servo guard releaseと`CRobotMem.Disconnect()`の後、VSTONE library shutdown hookが`CRobotMotion.ServoOff(...)`を試み、disconnected socketへのwrite failure／`NullPointerException`／`Cmd Send Error`が観測された。probe sourceは`ServoOn()`／`ServoOff()`を明示的に呼んでいない。観測結果はvendor runtimeのshutdown時write attemptであり、ServoOffが実機へ成功したとは記録しない。cleanup順序は現revisionで変更せず、probeからServoOff／ServoOnを追加せず、reflectionやprivate APIでshutdown hookを変更しない。
+
+A post-cleanup vendor shutdown-hook exception may appear after `Disconnect()`. Record the full stack trace separately from the selected Gate 1 operation and do not treat it as evidence of a successful cleanup or hardware state transition.
 
 ### Abnormal termination candidate
 
@@ -285,7 +353,7 @@ process crash、`SIGKILL`相当、電源断、JVM abortを使う試験は、LED/
 
 一つのtest caseにつき次を保存する。raw evidenceの保存先、機密性、Git追跡可否は事前に決める。
 
-Gate 1開始時は次の欄を空欄のままcopyし、人間が実測結果だけを記入する。本checkpointでは結果を記入しない。
+次の欄をcopyし、人間が実測結果だけを記入する。Gate 1A-0、option 3、Gate 1A-1、Gate 1Bの既存観測を保持し、Gate 1Lを新しい追補として記録する。
 
 ```text
 Date:
@@ -297,7 +365,7 @@ sotalib.jar path:
 sotalib.jar SHA-256:
 sotalib.jar provenance:
 
-Test: Gate 1A-0 / 1A-1 / 1A-2 / 1B / 1C / 1D
+Test: Gate 1A-0 / option 3 / Gate 1A-1 / Gate 1B / Gate 1L / cleanup
 Expected:
 Observed:
 PASS / FAIL / BLOCKED:
@@ -348,4 +416,4 @@ production adapter実装へ進む最低gateは次のとおりである。
 * normal/error cleanupがoperator観測を含めてpassする
 * 未確認項目がcapabilityとして成功扱いされない
 
-このrunbookが未実行である間、VSTONE mouth LED、native voice-sync、real audio output、running motion stop、Dog adapterをproduction-readyと表現しない。
+Gate 1A-0とGate 1A-1／1Bのservo safety観測だけではGate 1全体は未完了である。Gate 1A-1とGate 1Bのいずれでもmouth／eyes／power visible changeがなく、Gate 1LはNOT EXECUTEDであるため、VSTONE LED control、native voice-sync coordination、real audio output、running motion stop、Dog adapterをproduction-readyと表現しない。

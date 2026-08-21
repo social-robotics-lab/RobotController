@@ -3,25 +3,35 @@
 ## Status
 
 ```text
-Probe preparation: READY FOR HUMAN SOURCE REVIEW
-Manual execution: HUMAN-ONLY / NOT EXECUTED
+Probe preparation: READY FOR HUMAN SOURCE REVIEW OF LED-LOCK LIMITED REVISION
+Manual execution: HUMAN-ONLY
+Gate 1A-0: PASS OBSERVED ONCE (default servo IDs=8; guard acquired)
+Option 3 diagnostic: OBSERVED (servo=null, torque=null, LED populated after setLED_Sota)
+Gate 1A-1 servo safety: PASS / OBSERVED NO MOVEMENT IN ONE RUN
+Gate 1A-1 play return: true; visible mouth/eyes/power response: NO CHANGE
+Gate 1A mouth control: NOT CONFIRMED; Gate 1A overall: NOT PASSED
+Gate 1B disable/enable calls: RETURNED NORMALLY
+Gate 1B play after disable: true; visible mouth/eyes/power response: NO CHANGE
+Gate 1B: DIAGNOSTIC OBSERVATION ONLY; visible LED control NOT CONFIRMED
+Gate 1L LED ownership/lock: UNKNOWN / OPTIONS 10-12 NOT EXECUTED
+Options 5 and 9: BLOCKED
 Production adapter: BLOCKED UNTIL GATE 1 PASS
-Vendor JAR compile: NOT COMPILED
+Codex vendor-JAR compile: NOT PERFORMED
 ```
 
 このdirectoryはproduction sourceでも自動testでもない。通常の`java_server` Maven reactorからcompile／executeされず、CIまたはCodexを含む自動エージェントから実行してはならない。実機での使用にはrobot管理者、operator、安全監視者によるsource reviewと明示的opt-inが必要である。
 
 ## Purpose and residual risk
 
-`CRobotPose.setLED_Sota(...)`で作成したLED-only poseを`CRobotMotion.play(...)`したとき、servoへ絶対に影響しないというvendor guaranteeは確認できていない。今回のprobeは、公式公開APIのkey付きservo lockを安全柵として次の多重防御を行う。
+`CRobotPose.setLED_Sota(...)`で作成したposeを`CRobotMotion.play(...)`したとき、servoへ絶対に影響しないというvendor guaranteeは確認できていない。option 3のmanual diagnosticでは、`new CRobotPose()`直後のservo／torque／LED mapはいずれも`null`、`setLED_Sota(...)`後もservo／torque mapは`null`のまま、LED mapだけがsize 10へ変化した。従来の「mapはnon-nullかつempty」というstructural invariantを撤回し、servo／torque mapの`null OR empty`をcommand dataなしとして扱う。
 
-1. `CRobotPose`へservo targetまたはtorqueを設定しない。
-2. LED設定の前後および各`play`直前に`getPose().isEmpty()`と`getTorque().isEmpty()`を確認する。
-3. `getDefaultIDs()`で得た全servo IDを`VSTONE_GATE1_SERVO_GUARD`でlockする。
-4. `play`には異なる`VSTONE_GATE1_LED_TEST` keyを渡す。
-5. servo power、pose、torqueを変更するAPIをprobeから呼ばない。
-6. 初回writeはoperatorが明示開始する1回だけとし、後続Gateはmanual PASS確認で段階的に解放する。
-7. rate testは10／20／25 Hz、各2秒だけに限定する。
+1. option 1で従来どおりinitialize/connectし、option 2で全default servo guardを取得する。
+2. option 3で`new CRobotPose()`直後の`getPose()`、`getTorque()`、`getLed()`をcopyしてsizeとentryを表示する。
+3. local Java objectにだけ`setLED_Sota(...)`を適用し、同じ3 mapを再度copyして表示する。
+4. before/afterの等価性、added keys、removed keys、changed valuesをsoftware-sideで計算する。map iteration orderはsemanticとして扱わない。
+5. option 3は`CRobotMotion.play()`、servo power、pose write、torque write、voice-sync writeを呼ばない。
+6. option 4を、全servo guard、diagnostic完了、one-shot state、play直前のnull-or-empty invariantを満たす場合に限って有効にする。
+7. option 4のservo safetyがPASSした場合だけoption 6～8をnative mouth voice-syncの限定切り分けとして使用する。Gate 1Bではdisable単独でもvisible changeがなかったため、option 10～12だけをderived LED-ID lockの比較として追加する。option 5と9はdispatcherでblockする。
 
 公式JavaDocはkey付きservo lockを「play時にキーが一致しない制御出来ない」と説明する。ただし、これはLED-only `play`の無副作用保証、`InitRobot_Sota()`の無副作用保証、lockのcross-process保証、実機安全性の証明ではない。guardの実挙動とphysical motionの有無は人間が観測する。
 
@@ -76,41 +86,71 @@ Windows上でcompileだけを行う場合はclasspath separatorを`;`にする�
 * `vsmd_edison`、robot設定、device fileを変更しない。
 * installed JARと公開JavaDocのversion対応、公式provenance、SHA-256、licenseを記録する。
 * 4つのmouth levelと`Color.BLACK`のtest stateをoperatorが事前承認する。
-* servo動作を意図した試験ではなく、最初はGate 1A-0と1A-1だけを行う。
+* servo動作を意図した試験ではなく、このrevisionではoption 1、2、3、4、6、7、10、11、12、8だけを順に行う。
 
-## First execution: Gate 1A-0 and 1A-1 only
+## Current guarded workflow: 1, 2, 3, 4, 6, 7, 10, 11, 12, 8, STOP
 
-初回sessionではmenu option 1～4以外を実行しない。
+このrevisionで推奨する順序は **1 → 2 → 3 → 4 → 6 → 7 → 10 → 11 → 12 → 8 → c → STOP** だけである。LED-lock比較中はoption 7直後にoption 8を実行せず、voice-sync restore pendingのまま10→11→12へ進む。option 5（brightness sequence）とoption 9（rate test）はblockされ、write pathへ進まない。option 4、7、11、cleanup zeroは同じsingle source callの3引数`play(...)` helperを使う。4引数版は使用しない。
 
 1. 起動直後にhardware writeが行われていないことをconsoleで確認する。
 2. option 1を選び、physical preflightを再確認して`READY`を入力する。
 3. `Connect()`と`InitRobot_Sota()`のreturn、exception、予期しないphysical state changeを記録する。変化があれば中止する。
 4. option 2を選ぶ。`getDefaultIDs()`がnon-null／non-empty／全要素non-nullであることをprobeが確認し、全IDのservo guardを取得する。lockがfalseならLED writeなしでABORTする。
-5. option 3を選び、servo map 0、torque map 0、LED map non-zeroを確認する。このstepは`play`しない。
-6. option 4を選ぶ。表示されるguard、異なるkey、各map size、operator監視警告を確認する。
-7. ENTERでlow LED updateを1回だけ実行する。`play` return、mouth／eyes／power LED、音、exceptionを記録する。
-8. 人間がservo movementの有無を回答する。少しでもmovementがあればFAILとして以降を実行しない。
-9. `c`または`q`でcleanupし、mouth zero attempt、servo guard release、disconnectとphysical stateを確認する。
+5. option 3を選び、`BEFORE setLED_Sota`と`AFTER setLED_Sota`のservo／torque／LED mapのsize、全entry、等価性、added／removed／changedを再確認する。servo／torque mapの`null OR empty`をcommand dataなしとして扱う。
+6. `NO play() was called.`とoption 3完了表示を確認する。`setLED_Sota()`はlocal `CRobotPose` objectを変更するためだけに使われ、diagnostic中に`CRobotMotion.play()`は呼ばれない。
+7. option 4を選び、servo guard、default servo count、異なるkey、servo／torque mapの`NULL`または`EMPTY`、LED map size、configured `LOW`を確認する。
+8. ENTERでexactly one low `play(...)`を実行する。`q`はplay前にABORTする。falseまたはexception時にretryしない。
+9. 最優先でservo movement、次にunexpected servo soundへ明示的にyes/noで回答する。いずれかがYESならGate 1A-1 FAILとして、cleanup mouth-zeroを含む追加`play()`を禁止する。
+10. mouthのvisible changeへyes/noで回答し、eyesとpower LEDはfree textで記録する。servo safetyとmouth responseを別々に表示し、Gate 1A全体をPASSにしない。
+11. option 6を選ぶ。warningを読み、ENTERで`disabeMouthLEDVoiceSync()`を一回だけ要求する。option 6は`play()`、LED lock、direct LED-ID writeを行わない。current-state getterがないため実状態はUNKNOWNである。
+12. option 7を選び、disable attempt／normal return／restore pendingをpre-play表示で確認する。ENTERでoption 4と同じLOW条件の`play(...)`を一回だけ行い、servo movement、sound、mouth、eyes、powerを記録する。**ここでoption 8を実行しない。**
+13. option 10を選ぶ。fresh `setLED_Sota()` poseの`getLed().keySet()`からLED ID集合を導出・検証し、表示されたIDとkeyを確認してENTERする。option 10は`LockLEDHandle(VSTONE_GATE1_LED_TEST, derivedIds)`だけを一回呼び、`play()`しない。falseならfail-closedで終了し、retryしない。
+14. option 11を選ぶ。fresh LOW poseのLED ID集合とlocked集合が順序非依存で一致すること、servo／torque mapがnull-or-emptyであること、LED lock keyとplay keyが一致することを確認する。ENTERで3引数`play(...)`をexactly one回実行し、servo movement、sound、mouth、eyes、powerを明示的yes/noで記録する。
+15. option 12を選び、option 10で実際に取得したkeyとID cloneを使って`UnLockLEDHandle(...)`を一回要求する。
+16. option 8を選び、`enabeMouthLEDVoiceSync()`を一回だけ要求する。normal return後だけrestore-pendingをclearする。これは元状態復元の証明ではない。
+17. `c`または`q`でcleanupし、必要なmouth-zero、LED-lock release fallback、configured voice-sync enable fallback、servo guard release、disconnect、exception、physical stateを記録してSTOPする。
+
+観測済みoption 3出力の要約:
+
+```text
+BEFORE setLED_Sota
+Servo map size: -1 / <null>
+Torque map size: -1 / <null>
+LED map size: -1 / <null>
+
+AFTER setLED_Sota
+Servo map size: -1 / <null>
+Torque map size: -1 / <null>
+LED map size: 10
+
+Servo map equal before/after: YES
+Torque map equal before/after: YES
+LED map equal before/after: NO
+
+NO play() was called.
+LED observed entry for configured LOW=64: id=14, value=64
+```
+
+上記ID 14はtested runtimeで得られたmap entryの**OBSERVED**値であり、Sota mouth LEDの公式public ID specificationではない。
 
 ## Later guarded gates
 
-Gate 1A-1を人間がPASSとした後だけ、option 5は`ZERO → LOW → MEDIUM → HIGH → ZERO`を各ENTER入力で一stepずつ実行する。各stepで新しいposeとstructural checkを使い、servo movementがあれば即ABORTする。
-
-Gate 1A全体を人間がPASSとした後だけ、option 6で`disabeMouthLEDVoiceSync()`を一回試みる。option 7でdisable要求中のmanual LED updateを一回行い、native側の上書きを人間が観測する。option 8で`enabeMouthLEDVoiceSync()`を試みる。current-state getterがないため、これはconfigured enable attemptであり、未知の元状態を復元したとは表現しない。
-
-Gate 1Aと1Bを人間がPASSとした後だけ、option 9で10、20、25 Hzのいずれか一つを選べる。各sessionは2秒、最大20／40／50 updatesで停止し、requested target rate／requested updates／successful／failed／elapsedを表示する。これはJava側のrequested timingであり、hardwareが同じrateで反映したという保証ではない。`Thread.sleep()`の精度、vendor側latency、queueing、visible lag／jitterは人間が観測・記録する。50 Hzや無限loopは実装していない。終了時はmouth zeroを試みる。各rateは別sessionとして人間が開始・観測する。
+Gate 1A-1では`play()` true、servo movement／unexpected soundなし、mouth／eyes／power visible changeなしを観測した。Gate 1Bでもdisable callはnormal returnし、同じLOW `play()`はtrue、servo movement／soundなし、mouth／eyes／power visible changeなし、その後のenable callもnormal returnした。したがってnative voice-sync disable単独ではmanual `setLED_Sota` updateをvisibleにできず、voice-syncだけが原因という仮説は支持されなかった。次はderived full LED ID setをplay keyと同じkeyでlockする一変数だけをoption 10～12で比較する。LED ownership結果はまだ **UNKNOWN**、Gate 1A全体はNOT PASSED、option 5と9はblockしたままである。
 
 ## Cleanup
 
 normal quit、operator abort、exceptionの`finally`から次をbest effortで行う。
 
-1. LED playを試みていた場合だけ、guarded LED-only poseでmouth zeroを試みる。ただし人間がservo movementを報告した後はhard stopを優先し、追加の`play`を行わない。
-2. probeがvoice-sync disableを試み、configured enableが未完了の場合だけenableを試みる。
-3. probeが取得したall-default-servo guardだけを同じkeyとID集合でreleaseする。
-4. 接続している場合だけ`Disconnect()`を試みる。
-5. secondary exceptionをconsoleへ記録し、physical stateを人間が確認する。
+1. LED playを試みていた場合だけ、guarded LED-only poseで`Cleanup mouth zero — not part of LED-lock diagnostic measurement`を一回試みる。LED lock保持中ならlocked ID setとの一致を再確認し、unlock前に同じplay keyで行う。ただしmovementまたはunexpected sound後は追加`play`を行わない。
+2. probeがLED lockを保持している場合、option 10で保存したkeyとID cloneでreleaseを試みる。normal release後はstateをclearし、cleanupで二重unlockしない。
+3. probeがvoice-sync disableを試み、configured enableが未完了の場合だけenableを試みる。
+4. probeが取得したall-default-servo guardだけを同じkeyとID集合でreleaseする。
+5. 接続している場合だけ`Disconnect()`を試みる。
+6. secondary exceptionをconsoleへ記録し、physical stateを人間が確認する。
 
 cleanupでもservo pose、torque、power stateを変更するAPIは呼ばない。process crash、JVM abort、電源断でJava cleanupが走るとは保証しない。異常終了試験はこのrunbookの承認範囲外である。
+
+二回以上のmanual runで、probe cleanupがservo guardをreleaseし`Disconnect()`した後、VSTONE library shutdown hookが`CRobotMotion.ServoOff(...)`を試み、disconnected socketへのwrite failure／`NullPointerException`／`Cmd Send Error`が発生した。probe sourceは`ServoOn()`／`ServoOff()`を明示的に呼んでいない。これはServoOffが実機へ成功した証拠ではなく、vendor runtimeのshutdown時write attemptとして分離して記録する。cleanup順序は変更せず、probeへServoOn／ServoOff、reflection、private APIを追加しない。
 
 ## Evidence template
 
@@ -125,24 +165,52 @@ sotalib.jar version / source / license:
 sotalib.jar SHA-256:
 Probe source revision / SHA-256:
 
-Gate: 1A-0 / 1A-1 / 1A-2 / 1B / 1C / cleanup
+Gate: 1A-0 / option 3 / Gate 1A-1 / Gate 1B / Gate 1L / cleanup
 Servo guard acquired:
 Default servo ID count:
-Servo map empty:
-Torque map empty:
-Play key differs from servo guard key:
+Before servo / torque / LED maps:
+After servo / torque / LED maps:
+Map equality / added / removed / changed:
 
-Requested LED state:
-play() return:
+setLED_Sota local mutation requested:
+Option 3 play() called: NO
+Gate 1A-1 play() attempted:
+Gate 1A-1 play() return:
+Gate 1A-1 servo movement: YES / NO
+Gate 1A-1 unexpected servo sound: YES / NO
+Gate 1A-1 mouth visibly changed: YES / NO
+Gate 1A-1 either eye visibly changed: YES / NO
+Gate 1A-1 power visibly changed: YES / NO
+Gate 1A-1 servo safety result:
+Gate 1A overall result:
+
+Voice-sync disable attempted / returned normally:
+Gate 1B manual play() attempted / returned:
+Gate 1B servo movement: YES / NO
+Gate 1B unexpected servo sound: YES / NO
+Gate 1B mouth visibly changed: YES / NO
+Gate 1B either eye visibly changed: YES / NO
+Gate 1B power visibly changed: YES / NO
+Configured enable attempted / returned normally:
+Original voice-sync state restored: UNKNOWN
+
+Derived LED IDs:
+LockLEDHandle attempted / returned:
+Locked LED IDs:
+Gate 1L current pose LED IDs:
+LED ID sets equal:
+Gate 1L play() attempted / returned:
+Gate 1L servo movement / unexpected sound:
+Gate 1L mouth / eyes / power visibly changed:
+UnLockLEDHandle attempted / returned normally:
 Exception:
 
 Observed mouth:
 Observed eyes:
 Observed power LED:
-Observed servo movement: YES / NO
 Other observation:
 
-PASS / FAIL / ABORT:
+Independent result / FAIL / ABORT:
 ```
 
-観測していないphysical motion、torque、LED、audio状態を推測で補完しない。manual Gate 1のPASS／FAILはまだ未確定であり、PASS evidenceのreviewが終わるまでproduction VSTONE adapterを実装しない。
+観測していないphysical motion、torque、LED、audio状態を推測で補完しない。Gate 1A-0、option 3、Gate 1A-1、Gate 1Bの既存観測を保持する。Gate 1A-1とGate 1Bではservo movement／soundなしと`play()` trueを観測した一方、mouth／eyes／power visible changeはなかった。native voice-sync disable単独ではvisible controlを確認できず、Gate 1A全体は未確認である。Gate 1LはNOT EXECUTEDであり、そのevidence reviewが終わるまでproduction VSTONE adapterを実装しない。
