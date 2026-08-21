@@ -24,6 +24,38 @@ public class ServerIO {
 		return readData(size);
 	}
 
+	/**
+	 * Reads one bounded frame for audio_stream_v1. A clean EOF before the
+	 * header returns null; a truncated, negative, or oversized frame fails
+	 * before an unsafe allocation can occur. Legacy read() is unchanged.
+	 */
+	public byte[] read(int maxBytes) throws IOException {
+		if (maxBytes < 0) {
+			throw new IllegalArgumentException("Maximum frame size must not be negative.");
+		}
+		byte[] header = new byte[4];
+		int first = is.read();
+		if (first < 0) {
+			return null;
+		}
+		header[0] = (byte) first;
+		readExact(header, 1, 3, "frame header");
+		int size = ByteBuffer.wrap(header).order(ByteOrder.BIG_ENDIAN).getInt();
+		if (size < 0) {
+			throw new FrameException("Negative frame length: " + size + ".");
+		}
+		if (size > maxBytes) {
+			throw new FrameException(
+					"Frame length " + size + " exceeds maximum " + maxBytes + ".");
+		}
+		if (size == 0) {
+			return new byte[0];
+		}
+		byte[] data = new byte[size];
+		readExact(data, 0, size, "frame body");
+		return data;
+	}
+
 	public void write(byte[] data) throws IOException {
 		int size = data.length;
 		byte[] buf = ByteBuffer.allocate(4).putInt(size).array();
@@ -48,6 +80,35 @@ public class ServerIO {
 			size += is.read(buf, size, dataSize - size);
 		}
 		return buf;
+	}
+
+	private void readExact(byte[] data, int offset, int length, String part)
+			throws IOException {
+		int read = 0;
+		while (read < length) {
+			int count = is.read(data, offset + read, length - read);
+			if (count < 0) {
+				throw new FrameException("Truncated " + part + ".");
+			}
+			if (count == 0) {
+				int value = is.read();
+				if (value < 0) {
+					throw new FrameException("Truncated " + part + ".");
+				}
+				data[offset + read] = (byte) value;
+				read++;
+			} else {
+				read += count;
+			}
+		}
+	}
+
+	static final class FrameException extends IOException {
+		private static final long serialVersionUID = 1L;
+
+		private FrameException(String message) {
+			super(message);
+		}
 	}
 
 
