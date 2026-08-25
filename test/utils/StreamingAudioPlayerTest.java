@@ -1,6 +1,8 @@
 package utils;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.PrintStream;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -44,6 +46,24 @@ public final class StreamingAudioPlayerTest {
         });
         run("queue overflow cleanup", new CheckedRunnable() {
             @Override public void run() throws Exception { testQueueOverflowCleanup(); }
+        });
+        run("queue overflow diagnostic snapshot", new CheckedRunnable() {
+            @Override public void run() throws Exception { testQueueOverflowDiagnosticSnapshot(); }
+        });
+        run("slow native write diagnostic", new CheckedRunnable() {
+            @Override public void run() throws Exception { testSlowWriteDiagnostic(); }
+        });
+        run("normal native write has no diagnostic output", new CheckedRunnable() {
+            @Override public void run() throws Exception { testNormalWriteHasNoDiagnostics(); }
+        });
+        run("queue wait and inter-write gap diagnostics", new CheckedRunnable() {
+            @Override public void run() throws Exception { testQueueWaitAndInterWriteGap(); }
+        });
+        run("END and CANCEL stream summaries", new CheckedRunnable() {
+            @Override public void run() throws Exception { testEndAndCancelStreamSummaries(); }
+        });
+        run("writer failure diagnostic", new CheckedRunnable() {
+            @Override public void run() throws Exception { testWriterFailureDiagnostic(); }
         });
         run("asynchronous write failure observers", new CheckedRunnable() {
             @Override public void run() throws Exception { testAsyncWriteFailureObservers(); }
@@ -322,6 +342,235 @@ public final class StreamingAudioPlayerTest {
         joinFactoryWriters(failedCleanupFactory);
     }
 
+    private static void testQueueOverflowDiagnosticSnapshot() throws Exception {
+        final FakeFactory factory = new FakeFactory();
+        final FakeDevice device = new FakeDevice("diagnostic-overflow", factory.events);
+        device.blockWrite();
+        factory.add(device);
+        final StreamingAudioPlayer player = player(factory, 1, 25L, 1000L);
+        final StreamingAudioPlayer.Connection connection = requireConnection(player);
+        final ValueBox<StreamingAudioPlayer.OfferResult> result =
+                new ValueBox<StreamingAudioPlayer.OfferResult>();
+
+        String diagnostics = captureDiagnostics(new CheckedRunnable() {
+            @Override public void run() throws Exception {
+                connection.start();
+                assertAccepted(connection.offerPcm(pcm(61, 2)));
+                await(device.writeEntered, "diagnostic overflow first write");
+                assertAccepted(connection.offerPcm(pcm(62, 2)));
+                AsyncCall overflow = async("test-diagnostic-overflow", new CheckedRunnable() {
+                    @Override public void run() throws Exception {
+                        result.value = connection.offerPcm(pcm(63, 2));
+                    }
+                });
+                assertNotDoneAfter(
+                        overflow, 80L, "diagnostic FULL returned before writer cleanup");
+                device.releaseWrite();
+                overflow.awaitSuccess();
+                assertEquals(
+                        StreamingAudioPlayer.OfferResult.FULL,
+                        result.value,
+                        "diagnostic overflow result");
+                connection.close();
+                joinFactoryWriters(factory);
+            }
+        });
+
+        assertOccurrenceCount(diagnostics, "[AUDIO_DIAG] QUEUE_OFFER_TIMEOUT", 1);
+        assertContains(diagnostics, "state=STREAMING");
+        assertContains(diagnostics, "logical_queue_occupancy=1");
+        assertContains(diagnostics, "physical_queue_size=1");
+        assertContains(diagnostics, "available_permits=0");
+        assertContains(diagnostics, "queue_high_water=1");
+        assertContains(diagnostics, "writer_alive=true");
+        assertContains(diagnostics, "write_in_progress=true");
+        assertContains(diagnostics, "current_write_age_ms=");
+        assertContains(diagnostics, "last_completed_write_ms=0.000");
+        assertContains(diagnostics, "max_completed_write_ms=0.000");
+        assertContains(diagnostics, "completed_write_count=0");
+        assertContains(
+                diagnostics,
+                "from=STREAMING to=TERMINATING reason=QUEUE_OVERFLOW");
+        assertContains(
+                diagnostics,
+                "from=TERMINATING to=IDLE reason=QUEUE_OVERFLOW_CLEANUP");
+        assertOccurrenceCount(diagnostics, "[AUDIO_DIAG] STREAM_SUMMARY", 1);
+        assertContains(diagnostics, "reason=QUEUE_OVERFLOW");
+    }
+
+    private static void testSlowWriteDiagnostic() throws Exception {
+        final FakeFactory factory = new FakeFactory();
+        final FakeNanoClock clock = new FakeNanoClock();
+        final FakeDevice device = new FakeDevice("diagnostic-slow-write", factory.events);
+        device.advanceClockDuringWrite(clock, 40000000L);
+        factory.add(device);
+        final StreamingAudioPlayer player = new StreamingAudioPlayer(
+                2, 20L, 1000L, factory, clock);
+        final StreamingAudioPlayer.Connection connection = requireConnection(player);
+
+        String diagnostics = captureDiagnostics(new CheckedRunnable() {
+            @Override public void run() throws Exception {
+                connection.start();
+                assertAccepted(connection.offerPcm(pcm(64, 960)));
+                await(device.writeEntered, "diagnostic slow write");
+                connection.end();
+                connection.close();
+                joinFactoryWriters(factory);
+            }
+        });
+
+        assertOccurrenceCount(diagnostics, "[AUDIO_DIAG] SLOW_WRITE", 1);
+        assertContains(diagnostics, "bytes=960");
+        assertContains(diagnostics, "duration_ms=40.000");
+        assertOccurrenceCount(diagnostics, "[AUDIO_DIAG] STREAM_SUMMARY", 1);
+        assertContains(diagnostics, "writes=1");
+        assertContains(diagnostics, "slow_writes=1");
+        assertContains(diagnostics, "total_write_ms=40.000");
+        assertContains(diagnostics, "avg_write_ms=40.000");
+        assertContains(diagnostics, "max_write_ms=40.000");
+        assertContains(diagnostics, "max_consecutive_slow_writes=1");
+        assertContains(diagnostics, "reason=END");
+    }
+
+    private static void testNormalWriteHasNoDiagnostics() throws Exception {
+        final FakeFactory factory = new FakeFactory();
+        final FakeNanoClock clock = new FakeNanoClock();
+        final FakeDevice device = new FakeDevice("diagnostic-normal-write", factory.events);
+        device.advanceClockDuringWrite(clock, 20000000L);
+        factory.add(device);
+        final StreamingAudioPlayer player = new StreamingAudioPlayer(
+                2, 20L, 1000L, factory, clock);
+        final StreamingAudioPlayer.Connection connection = requireConnection(player);
+
+        String diagnostics = captureDiagnostics(new CheckedRunnable() {
+            @Override public void run() throws Exception {
+                connection.start();
+                assertAccepted(connection.offerPcm(pcm(67, 960)));
+                await(device.writeEntered, "diagnostic normal write");
+                connection.end();
+                connection.close();
+                joinFactoryWriters(factory);
+            }
+        });
+
+        assertFalse(diagnostics.contains("[AUDIO_DIAG] SLOW_WRITE"),
+                "normal write slow event: " + diagnostics);
+        assertFalse(diagnostics.contains("[AUDIO_DIAG] QUEUE_WAIT_SLOW"),
+                "normal write queue-wait event: " + diagnostics);
+        assertFalse(diagnostics.contains("[AUDIO_DIAG] INTER_WRITE_GAP"),
+                "normal write gap event: " + diagnostics);
+        assertOccurrenceCount(diagnostics, "[AUDIO_DIAG] STREAM_SUMMARY", 1);
+        assertContains(diagnostics, "writes=1");
+        assertContains(diagnostics, "slow_writes=0");
+        assertContains(diagnostics, "avg_write_ms=20.000");
+        assertContains(diagnostics, "reason=END");
+    }
+
+    private static void testQueueWaitAndInterWriteGap() throws Exception {
+        final FakeFactory factory = new FakeFactory();
+        final FakeNanoClock clock = new FakeNanoClock();
+        final FakeDevice device = new FakeDevice("diagnostic-writer-gap", factory.events);
+        device.advanceClockDuringWrite(clock, 20000000L);
+        factory.add(device);
+        final StreamingAudioPlayer player = new StreamingAudioPlayer(
+                2, 20L, 1000L, factory, clock);
+        final StreamingAudioPlayer.Connection connection = requireConnection(player);
+
+        String diagnostics = captureDiagnostics(new CheckedRunnable() {
+            @Override public void run() throws Exception {
+                connection.start();
+                clock.awaitReads(1, "first queue wait start");
+                clock.advance(50000000L);
+                assertAccepted(connection.offerPcm(pcm(68, 960)));
+                clock.awaitReads(5, "second queue wait start");
+                clock.advance(60000000L);
+                assertAccepted(connection.offerPcm(pcm(69, 960)));
+                clock.awaitReads(9, "terminal queue wait start");
+                connection.end();
+                connection.close();
+                joinFactoryWriters(factory);
+            }
+        });
+
+        assertOccurrenceCount(diagnostics, "[AUDIO_DIAG] QUEUE_WAIT_SLOW", 2);
+        assertContains(diagnostics, "wait_ms=50.000");
+        assertContains(diagnostics, "wait_ms=60.000");
+        assertContains(diagnostics, "queue_size_after_take=0");
+        assertContains(diagnostics, "logical_queue_occupancy=0");
+        assertContains(diagnostics, "available_permits=2");
+        assertOccurrenceCount(diagnostics, "[AUDIO_DIAG] INTER_WRITE_GAP", 1);
+        assertContains(diagnostics, "gap_ms=60.000 queue_wait_ms=60.000");
+        assertOccurrenceCount(diagnostics, "[AUDIO_DIAG] STREAM_SUMMARY", 1);
+        assertContains(diagnostics, "writes=2");
+        assertContains(diagnostics, "slow_writes=0");
+        assertContains(diagnostics, "total_write_ms=40.000");
+        assertContains(diagnostics, "avg_write_ms=20.000");
+        assertContains(diagnostics, "max_write_ms=20.000");
+        assertContains(diagnostics, "max_queue_wait_ms=60.000");
+        assertContains(diagnostics, "max_inter_write_gap_ms=60.000");
+        assertContains(diagnostics, "queue_high_water=1");
+        assertContains(diagnostics, "max_consecutive_slow_writes=0");
+        assertContains(diagnostics, "reason=END");
+    }
+
+    private static void testEndAndCancelStreamSummaries() throws Exception {
+        final FakeFactory factory = new FakeFactory();
+        factory.add(new FakeDevice("diagnostic-summary-end", factory.events));
+        factory.add(new FakeDevice("diagnostic-summary-cancel", factory.events));
+        final StreamingAudioPlayer player = player(factory, 2, 20L, 1000L);
+        final StreamingAudioPlayer.Connection connection = requireConnection(player);
+
+        String diagnostics = captureDiagnostics(new CheckedRunnable() {
+            @Override public void run() throws Exception {
+                connection.start();
+                connection.end();
+                connection.start();
+                connection.cancel();
+                connection.close();
+                joinFactoryWriters(factory);
+            }
+        });
+
+        assertOccurrenceCount(diagnostics, "[AUDIO_DIAG] STREAM_SUMMARY", 2);
+        assertOccurrenceCount(diagnostics, "reason=END", 1);
+        assertOccurrenceCount(diagnostics, "reason=CANCEL", 1);
+    }
+
+    private static void testWriterFailureDiagnostic() throws Exception {
+        final FakeFactory factory = new FakeFactory();
+        final FakeDevice device = failingWriteDevice("diagnostic-failure", factory.events);
+        factory.add(device);
+        final StreamingAudioPlayer player = player(factory, 2, 20L, 1000L);
+        final StreamingAudioPlayer.Connection connection = requireConnection(player);
+
+        String diagnostics = captureDiagnostics(new CheckedRunnable() {
+            @Override public void run() throws Exception {
+                connection.start();
+                assertAccepted(connection.offerPcm(pcm(65, 2)));
+                await(device.closed, "diagnostic writer failure cleanup");
+                joinFactoryWriters(factory);
+                expectThrows(IOException.class, new CheckedRunnable() {
+                    @Override public void run() throws Exception {
+                        connection.offerPcm(pcm(66, 2));
+                    }
+                });
+                connection.close();
+            }
+        });
+
+        assertOccurrenceCount(diagnostics, "[AUDIO_DIAG] WRITER_FAILURE", 1);
+        assertContains(diagnostics, "phase=NATIVE_WRITE");
+        assertContains(diagnostics, "exception=java.io.IOException");
+        assertContains(diagnostics, "message=injected write failure for diagnostic-failure");
+        assertContains(diagnostics, "write_in_progress=false");
+        assertContains(diagnostics, "completed_write_count=0");
+        assertContains(
+                diagnostics,
+                "from=STREAMING to=FAILED reason=WRITER_FAILURE");
+        assertOccurrenceCount(diagnostics, "[AUDIO_DIAG] STREAM_SUMMARY", 1);
+        assertContains(diagnostics, "reason=WRITER_FAILURE");
+    }
+
     private static void testAsyncWriteFailureObservers() throws Exception {
         FakeFactory factory = new FakeFactory();
         FakeDevice offerFailure = failingWriteDevice("failure-offer", factory.events);
@@ -580,6 +829,36 @@ public final class StreamingAudioPlayerTest {
                 message + ": " + values);
     }
 
+    private static String captureDiagnostics(CheckedRunnable runnable) throws Exception {
+        PrintStream original = System.err;
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        PrintStream capture = new PrintStream(bytes, true, "UTF-8");
+        System.setErr(capture);
+        try {
+            runnable.run();
+        } finally {
+            System.setErr(original);
+            capture.close();
+        }
+        return new String(bytes.toByteArray(), "UTF-8");
+    }
+
+    private static void assertContains(String value, String expected) {
+        assertTrue(value.contains(expected),
+                "Expected diagnostic fragment '" + expected + "' in: " + value);
+    }
+
+    private static void assertOccurrenceCount(String value, String expected, int count) {
+        int actual = 0;
+        int index = 0;
+        while ((index = value.indexOf(expected, index)) >= 0) {
+            actual++;
+            index += expected.length();
+        }
+        assertEquals(Integer.valueOf(count), Integer.valueOf(actual),
+                "diagnostic occurrence count for " + expected);
+    }
+
     private static void joinFactoryWriters(FakeFactory factory) throws Exception {
         List<Thread> snapshot;
         synchronized (factory.writerThreads) {
@@ -672,6 +951,37 @@ public final class StreamingAudioPlayerTest {
 
     private interface CheckedRunnable { void run() throws Exception; }
     private static final class ValueBox<T> { private volatile T value; }
+
+    private static final class FakeNanoClock
+            implements StreamingAudioPlayer.NanoClock {
+        private long nanos;
+        private int reads;
+
+        @Override
+        public synchronized long nanoTime() {
+            reads++;
+            notifyAll();
+            return nanos;
+        }
+
+        private synchronized void advance(long durationNanos) {
+            nanos += durationNanos;
+        }
+
+        private synchronized void awaitReads(int expected, String message)
+                throws Exception {
+            long deadline = System.nanoTime()
+                    + TimeUnit.MILLISECONDS.toNanos(TEST_TIMEOUT_MILLIS);
+            while (reads < expected) {
+                long remaining = deadline - System.nanoTime();
+                if (remaining <= 0L) {
+                    throw new AssertionError(
+                            "Timed out waiting for " + message + ": " + reads);
+                }
+                TimeUnit.NANOSECONDS.timedWait(this, remaining);
+            }
+        }
+    }
 
     private static final class AsyncCall {
         private final CountDownLatch done = new CountDownLatch(1);
@@ -812,6 +1122,8 @@ public final class StreamingAudioPlayerTest {
         private volatile IOException drainFailure;
         private volatile IOException dropFailure;
         private volatile IOException closeFailure;
+        private volatile FakeNanoClock writeClock;
+        private volatile long writeAdvanceNanos;
 
         private FakeDevice(String name, EventLog events) { this.name = name; this.events = events; }
         private void blockWrite() { writeRelease = new CountDownLatch(1); }
@@ -820,6 +1132,10 @@ public final class StreamingAudioPlayerTest {
             if (release != null) { release.countDown(); }
         }
         private void blockClose() { closeRelease = new CountDownLatch(1); }
+        private void advanceClockDuringWrite(FakeNanoClock clock, long durationNanos) {
+            writeClock = clock;
+            writeAdvanceNanos = durationNanos;
+        }
         private void releaseClose() {
             CountDownLatch release = closeRelease;
             if (release != null) { release.countDown(); }
@@ -834,6 +1150,8 @@ public final class StreamingAudioPlayerTest {
             writeEntered.countDown();
             CountDownLatch release = writeRelease;
             if (release != null) { awaitRelease(release, "fake write release"); }
+            FakeNanoClock clock = writeClock;
+            if (clock != null) { clock.advance(writeAdvanceNanos); }
             if (writeFailure != null) { throw writeFailure; }
         }
         @Override public void drain() throws IOException {

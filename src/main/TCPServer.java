@@ -158,6 +158,7 @@ public class TCPServer implements Runnable {
 							offerAudio(connection, pcm);
 					if (result == StreamingAudioPlayer.OfferResult.FULL) {
 						sendError(io, ERROR_QUEUE_OVERFLOW);
+						logServerError("QUEUE_OVERFLOW", null);
 						streaming = false;
 					}
 				} else if (type == RECORD_END) {
@@ -182,9 +183,11 @@ public class TCPServer implements Runnable {
 			}
 		} catch (ProtocolFailure exception) {
 			sendErrorPreserving(io, ERROR_PROTOCOL, exception);
+			logServerError("PROTOCOL_ERROR", exception.getMessage());
 			throw exception;
 		} catch (AudioFailure exception) {
 			sendErrorPreserving(io, ERROR_AUDIO, exception);
+			logServerError("AUDIO_ERROR", exception.getMessage());
 			throw exception;
 		}
 	}
@@ -252,6 +255,20 @@ public class TCPServer implements Runnable {
 			sendError(io, code);
 		} catch (IOException responseFailure) {
 			primary.addSuppressed(responseFailure);
+		}
+	}
+
+	private static void logServerError(String error, String reason) {
+		try {
+			StringBuilder message = new StringBuilder(
+					"[AUDIO_DIAG] SERVER_ERROR error=").append(error);
+			if (reason != null) {
+				message.append(" reason=")
+						.append(reason.replace('\r', ' ').replace('\n', ' '));
+			}
+			System.err.println(message.toString());
+		} catch (RuntimeException ignored) {
+			/* Diagnostic output must not alter protocol handling. */
 		}
 	}
 

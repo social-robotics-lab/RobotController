@@ -2,6 +2,7 @@ package utils;
 
 import java.io.Closeable;
 import java.io.IOException;
+import java.util.Locale;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Semaphore;
@@ -15,6 +16,13 @@ import java.util.concurrent.TimeUnit;
 public final class StreamingAudioPlayer {
 
     private static final int MAX_PCM_BYTES = 960;
+    private static final long SLOW_WRITE_THRESHOLD_NANOS =
+            TimeUnit.MILLISECONDS.toNanos(40L);
+    private static final long SLOW_QUEUE_WAIT_THRESHOLD_NANOS =
+            TimeUnit.MILLISECONDS.toNanos(40L);
+    private static final long SLOW_INTER_WRITE_GAP_THRESHOLD_NANOS =
+            TimeUnit.MILLISECONDS.toNanos(40L);
+    private static final String AUDIO_DIAGNOSTIC_PREFIX = "[AUDIO_DIAG]";
     private static final String WRITER_THREAD_PREFIX =
             "RobotController-AudioWriter-";
 
@@ -27,6 +35,17 @@ public final class StreamingAudioPlayer {
     interface PcmDeviceFactory {
         PcmDevice open() throws IOException;
     }
+
+    interface NanoClock {
+        long nanoTime();
+    }
+
+    private static final NanoClock SYSTEM_NANO_CLOCK = new NanoClock() {
+        @Override
+        public long nanoTime() {
+            return System.nanoTime();
+        }
+    };
 
     interface PcmDevice extends Closeable {
         void write(byte[] data, int offset, int length) throws IOException;
@@ -103,6 +122,21 @@ public final class StreamingAudioPlayer {
         private volatile boolean startSucceeded;
         private volatile boolean cleanupFailed;
         private volatile IOException failure;
+        private volatile boolean writeInProgress;
+        private volatile long writeStartNanos;
+        private volatile long lastCompletedWriteDurationNanos;
+        private volatile long maxCompletedWriteDurationNanos;
+        private volatile long completedWriteCount;
+        private volatile int queueHighWaterMark;
+        private long totalCompletedWriteDurationNanos;
+        private long slowWriteCount;
+        private long currentConsecutiveSlowWrites;
+        private long maxConsecutiveSlowWrites;
+        private long maxQueueWaitNanos;
+        private long maxInterWriteGapNanos;
+        private long previousWriteCompletionNanos;
+        private boolean hasPreviousWriteCompletion;
+        private volatile String terminalReason;
         private Thread writer;
 
         private ResponseContext(
@@ -143,6 +177,7 @@ public final class StreamingAudioPlayer {
     private final long barrierTimeoutMillis;
     private final PcmDeviceFactory deviceFactory;
     private final WriterHook writerHook;
+    private final NanoClock diagnosticClock;
 
     private long nextGeneration;
     private Connection acquiredConnection;
@@ -186,6 +221,37 @@ public final class StreamingAudioPlayer {
             long barrierTimeoutMillis,
             PcmDeviceFactory deviceFactory,
             WriterHook writerHook) {
+        this(
+                queueCapacity,
+                offerTimeoutMillis,
+                barrierTimeoutMillis,
+                deviceFactory,
+                writerHook,
+                SYSTEM_NANO_CLOCK);
+    }
+
+    StreamingAudioPlayer(
+            int queueCapacity,
+            long offerTimeoutMillis,
+            long barrierTimeoutMillis,
+            PcmDeviceFactory deviceFactory,
+            NanoClock diagnosticClock) {
+        this(
+                queueCapacity,
+                offerTimeoutMillis,
+                barrierTimeoutMillis,
+                deviceFactory,
+                NO_WRITER_HOOK,
+                diagnosticClock);
+    }
+
+    private StreamingAudioPlayer(
+            int queueCapacity,
+            long offerTimeoutMillis,
+            long barrierTimeoutMillis,
+            PcmDeviceFactory deviceFactory,
+            WriterHook writerHook,
+            NanoClock diagnosticClock) {
         if (queueCapacity <= 0 || queueCapacity == Integer.MAX_VALUE) {
             throw new IllegalArgumentException(
                     "Queue capacity must be between 1 and Integer.MAX_VALUE - 1.");
@@ -202,11 +268,15 @@ public final class StreamingAudioPlayer {
         if (writerHook == null) {
             throw new IllegalArgumentException("Writer hook must not be null.");
         }
+        if (diagnosticClock == null) {
+            throw new IllegalArgumentException("Diagnostic clock must not be null.");
+        }
         this.queueCapacity = queueCapacity;
         this.offerTimeoutMillis = offerTimeoutMillis;
         this.barrierTimeoutMillis = barrierTimeoutMillis;
         this.deviceFactory = deviceFactory;
         this.writerHook = writerHook;
+        this.diagnosticClock = diagnosticClock;
     }
 
     /**
@@ -403,6 +473,7 @@ public final class StreamingAudioPlayer {
             }
 
             if (accepted) {
+                updateQueueHighWater(current);
                 if (!current.queue.offer(QueueItem.pcm(pcm))) {
                     current.pcmSlots.release();
                     throw new IllegalStateException(
@@ -412,10 +483,21 @@ public final class StreamingAudioPlayer {
                 return OfferResult.ACCEPTED;
             }
 
+            setTerminalReason(current, "QUEUE_OVERFLOW");
+            logQueueOfferTimeout(current);
+            ConnectionState previousState = null;
             synchronized (this) {
                 if (response == current) {
+                    previousState = state;
                     state = ConnectionState.TERMINATING;
                 }
+            }
+            if (previousState != null) {
+                logStateTransition(
+                        current,
+                        previousState,
+                        ConnectionState.TERMINATING,
+                        "QUEUE_OVERFLOW");
             }
             requestAbort(current);
             Deadline deadline = new Deadline(barrierTimeoutMillis);
@@ -423,7 +505,10 @@ public final class StreamingAudioPlayer {
                 poison(current);
                 throw timeout("queue overflow cleanup", current);
             }
-            IOException failure = completeResponse(current, "queue overflow cleanup");
+            IOException failure = completeResponse(
+                    current,
+                    "queue overflow cleanup",
+                    "QUEUE_OVERFLOW_CLEANUP");
             if (failure != null) {
                 throw failure;
             }
@@ -440,6 +525,7 @@ public final class StreamingAudioPlayer {
                 return;
             }
 
+            setTerminalReason(current, "END");
             synchronized (this) {
                 if (response == current) {
                     state = ConnectionState.TERMINATING;
@@ -466,6 +552,7 @@ public final class StreamingAudioPlayer {
 
         private void cancelSerially() throws IOException, InterruptedException {
             ResponseContext current = requireStreamingOrFailedResponse("cancel");
+            setTerminalReason(current, "CANCEL");
             synchronized (this) {
                 if (response == current) {
                     state = ConnectionState.TERMINATING;
@@ -504,6 +591,7 @@ public final class StreamingAudioPlayer {
                 return;
             }
 
+            setTerminalReason(current, "DISCONNECT");
             requestAbort(current);
             Deadline deadline = new Deadline(barrierTimeoutMillis);
             try {
@@ -586,9 +674,19 @@ public final class StreamingAudioPlayer {
         }
 
         private IOException completeResponse(ResponseContext current, String operation) {
+            return completeResponse(current, operation, null);
+        }
+
+        private IOException completeResponse(
+                ResponseContext current,
+                String operation,
+                String transitionReason) {
             IOException failure = responseFailure(current, operation);
+            ConnectionState previousState = null;
+            ConnectionState nextState = null;
             synchronized (this) {
                 if (response == current) {
+                    previousState = state;
                     if (current.cleanupFailed) {
                         closed = true;
                         state = ConnectionState.POISONED;
@@ -596,13 +694,26 @@ public final class StreamingAudioPlayer {
                         response = null;
                         state = ConnectionState.IDLE;
                     }
+                    nextState = state;
                 }
+            }
+            if (previousState != null
+                    && (transitionReason != null
+                            || nextState == ConnectionState.POISONED)) {
+                logStateTransition(
+                        current,
+                        previousState,
+                        nextState,
+                        transitionReason != null
+                                ? transitionReason
+                                : "CLEANUP_FAILURE");
             }
             return failure;
         }
 
         private void poison(ResponseContext current) {
             boolean release = false;
+            ConnectionState previousState = null;
             synchronized (this) {
                 closed = true;
                 if (response == current
@@ -613,8 +724,16 @@ public final class StreamingAudioPlayer {
                     state = ConnectionState.CLOSED;
                     release = true;
                 } else if (response == current) {
+                    previousState = state;
                     state = ConnectionState.POISONED;
                 }
+            }
+            if (previousState != null) {
+                logStateTransition(
+                        current,
+                        previousState,
+                        ConnectionState.POISONED,
+                        "FAIL_CLOSED");
             }
             if (release) {
                 releaseConnection(this);
@@ -634,6 +753,7 @@ public final class StreamingAudioPlayer {
         }
 
         private void onWriterComplete(ResponseContext current) {
+            ConnectionState previousState = null;
             synchronized (this) {
                 if (response != current) {
                     return;
@@ -644,8 +764,60 @@ public final class StreamingAudioPlayer {
                     }
                 } else if (state == ConnectionState.STREAMING
                         || state == ConnectionState.STARTING) {
+                    previousState = state;
                     state = ConnectionState.FAILED;
                 }
+            }
+            if (previousState != null) {
+                logStateTransition(
+                        current,
+                        previousState,
+                        ConnectionState.FAILED,
+                        "WRITER_FAILURE");
+            }
+        }
+
+        private synchronized ConnectionState snapshotState() {
+            return state;
+        }
+
+        private void updateQueueHighWater(ResponseContext current) {
+            int occupancy = queueCapacity - current.pcmSlots.availablePermits();
+            if (occupancy > current.queueHighWaterMark) {
+                current.queueHighWaterMark = occupancy;
+            }
+        }
+
+        private void logQueueOfferTimeout(ResponseContext current) {
+            try {
+                boolean writeInProgress = current.writeInProgress;
+                long currentWriteAge = 0L;
+                if (writeInProgress) {
+                    currentWriteAge = elapsedNanos(
+                            current.writeStartNanos,
+                            diagnosticClock.nanoTime());
+                }
+                int availablePermits = current.pcmSlots.availablePermits();
+                int logicalQueueOccupancy = queueCapacity - availablePermits;
+                Thread writer = current.writer;
+                diagnostic(AUDIO_DIAGNOSTIC_PREFIX
+                        + " QUEUE_OFFER_TIMEOUT"
+                        + " generation=" + current.generation
+                        + " state=" + snapshotState()
+                        + " logical_queue_occupancy=" + logicalQueueOccupancy
+                        + " physical_queue_size=" + current.queue.size()
+                        + " available_permits=" + availablePermits
+                        + " queue_high_water=" + current.queueHighWaterMark
+                        + " writer_alive=" + (writer != null && writer.isAlive())
+                        + " write_in_progress=" + writeInProgress
+                        + " current_write_age_ms=" + formatMillis(currentWriteAge)
+                        + " last_completed_write_ms="
+                        + formatMillis(current.lastCompletedWriteDurationNanos)
+                        + " max_completed_write_ms="
+                        + formatMillis(current.maxCompletedWriteDurationNanos)
+                        + " completed_write_count=" + current.completedWriteCount);
+            } catch (RuntimeException ignored) {
+                /* Diagnostic formatting must not alter overflow cleanup. */
             }
         }
 
@@ -669,6 +841,7 @@ public final class StreamingAudioPlayer {
     private void runResponse(Connection owner, ResponseContext current) {
         PcmDevice device = null;
         IOException failure = null;
+        String failurePhase = null;
         boolean startSignalled = false;
         try {
             device = deviceFactory.open();
@@ -685,9 +858,17 @@ public final class StreamingAudioPlayer {
             } else {
                 boolean finished = false;
                 while (!finished) {
+                    long queueWaitStart = readDiagnosticClock();
                     QueueItem item = current.queue.take();
+                    long queueWaitNanos = diagnosticElapsedNanos(
+                            queueWaitStart, readDiagnosticClock());
                     if (item.kind == ItemKind.PCM) {
                         current.pcmSlots.release();
+                        int queueSizeAfterTake = current.queue.size();
+                        int availablePermits = current.pcmSlots.availablePermits();
+                        if (queueWaitNanos > current.maxQueueWaitNanos) {
+                            current.maxQueueWaitNanos = queueWaitNanos;
+                        }
                         current.writerHook.beforeWrite(
                                 current.generation, item.pcm);
                         boolean writeClaimed;
@@ -701,8 +882,35 @@ public final class StreamingAudioPlayer {
                         }
                         if (writeClaimed) {
                             try {
-                                device.write(item.pcm, 0, item.pcm.length);
+                                boolean writeSucceeded = false;
+                                long writeStart = beginWriteDiagnostics(current);
+                                long interWriteGapNanos =
+                                        current.hasPreviousWriteCompletion
+                                                ? diagnosticElapsedNanos(
+                                                        current.previousWriteCompletionNanos,
+                                                        writeStart)
+                                                : 0L;
+                                if (interWriteGapNanos
+                                        > current.maxInterWriteGapNanos) {
+                                    current.maxInterWriteGapNanos =
+                                            interWriteGapNanos;
+                                }
+                                try {
+                                    device.write(item.pcm, 0, item.pcm.length);
+                                    writeSucceeded = true;
+                                } finally {
+                                    finishWriteDiagnostics(
+                                            current,
+                                            item.pcm.length,
+                                            writeStart,
+                                            queueWaitNanos,
+                                            interWriteGapNanos,
+                                            queueSizeAfterTake,
+                                            availablePermits,
+                                            writeSucceeded);
+                                }
                             } catch (IOException exception) {
+                                failurePhase = "NATIVE_WRITE";
                                 failure = appendFailure(failure, exception);
                                 markAbortRequested(current);
                                 discardQueuedItems(current);
@@ -713,10 +921,16 @@ public final class StreamingAudioPlayer {
                         }
                     } else if (item.kind == ItemKind.END) {
                         failure = drainAndClose(current, device, failure);
+                        if (failure != null && failurePhase == null) {
+                            failurePhase = "DRAIN_OR_CLOSE";
+                        }
                         device = null;
                         finished = true;
                     } else {
                         failure = dropAndClose(current, device, failure);
+                        if (failure != null && failurePhase == null) {
+                            failurePhase = "DROP_OR_CLOSE";
+                        }
                         device = null;
                         finished = true;
                     }
@@ -724,6 +938,7 @@ public final class StreamingAudioPlayer {
             }
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
+            failurePhase = "INTERRUPTED";
             failure = appendFailure(
                     failure,
                     new IOException(
@@ -735,12 +950,16 @@ public final class StreamingAudioPlayer {
                 device = null;
             }
         } catch (IOException exception) {
+            if (failurePhase == null) {
+                failurePhase = "OPEN_OR_WRITER";
+            }
             failure = appendFailure(failure, exception);
             if (device != null) {
                 failure = dropAndClose(current, device, failure);
                 device = null;
             }
         } catch (RuntimeException exception) {
+            failurePhase = "RUNTIME";
             failure = appendFailure(
                     failure,
                     new IOException(
@@ -754,7 +973,14 @@ public final class StreamingAudioPlayer {
         } finally {
             if (device != null) {
                 failure = dropAndClose(current, device, failure);
+                if (failure != null && failurePhase == null) {
+                    failurePhase = "DROP_OR_CLOSE";
+                }
             }
+            if (failure != null) {
+                logWriterFailure(current, failurePhase, failure);
+            }
+            logStreamSummary(current, failure);
             current.failure = failure;
             discardQueuedItems(current);
             if (!startSignalled) {
@@ -763,6 +989,203 @@ public final class StreamingAudioPlayer {
             }
             current.completed.countDown();
             owner.onWriterComplete(current);
+        }
+    }
+
+    private long beginWriteDiagnostics(ResponseContext current) {
+        current.writeInProgress = true;
+        long start = readDiagnosticClock();
+        current.writeStartNanos = start != Long.MIN_VALUE ? start : 0L;
+        return start;
+    }
+
+    private void finishWriteDiagnostics(
+            ResponseContext current,
+            int bytes,
+            long writeStart,
+            long queueWaitNanos,
+            long interWriteGapNanos,
+            int queueSizeAfterTake,
+            int availablePermits,
+            boolean succeeded) {
+        try {
+            long writeCompletion = readDiagnosticClock();
+            long duration = diagnosticElapsedNanos(writeStart, writeCompletion);
+            if (succeeded) {
+                current.lastCompletedWriteDurationNanos = duration;
+                if (duration > current.maxCompletedWriteDurationNanos) {
+                    current.maxCompletedWriteDurationNanos = duration;
+                }
+                current.completedWriteCount++;
+                current.totalCompletedWriteDurationNanos += duration;
+                if (duration >= SLOW_WRITE_THRESHOLD_NANOS) {
+                    current.slowWriteCount++;
+                    current.currentConsecutiveSlowWrites++;
+                    if (current.currentConsecutiveSlowWrites
+                            > current.maxConsecutiveSlowWrites) {
+                        current.maxConsecutiveSlowWrites =
+                                current.currentConsecutiveSlowWrites;
+                    }
+                } else {
+                    current.currentConsecutiveSlowWrites = 0L;
+                }
+                if (writeCompletion != Long.MIN_VALUE) {
+                    current.previousWriteCompletionNanos = writeCompletion;
+                    current.hasPreviousWriteCompletion = true;
+                }
+            }
+            int logicalQueueOccupancy = queueCapacity - availablePermits;
+            if (queueWaitNanos >= SLOW_QUEUE_WAIT_THRESHOLD_NANOS) {
+                diagnostic(AUDIO_DIAGNOSTIC_PREFIX
+                        + " QUEUE_WAIT_SLOW"
+                        + " generation=" + current.generation
+                        + " wait_ms=" + formatMillis(queueWaitNanos)
+                        + " queue_size_after_take=" + queueSizeAfterTake
+                        + " logical_queue_occupancy=" + logicalQueueOccupancy
+                        + " available_permits=" + availablePermits);
+            }
+            if (current.completedWriteCount > (succeeded ? 1L : 0L)
+                    && interWriteGapNanos
+                            >= SLOW_INTER_WRITE_GAP_THRESHOLD_NANOS) {
+                diagnostic(AUDIO_DIAGNOSTIC_PREFIX
+                        + " INTER_WRITE_GAP"
+                        + " generation=" + current.generation
+                        + " gap_ms=" + formatMillis(interWriteGapNanos)
+                        + " queue_wait_ms=" + formatMillis(queueWaitNanos)
+                        + " queue_size_after_take=" + queueSizeAfterTake
+                        + " logical_queue_occupancy=" + logicalQueueOccupancy
+                        + " available_permits=" + availablePermits);
+            }
+            if (succeeded && duration >= SLOW_WRITE_THRESHOLD_NANOS) {
+                diagnostic(AUDIO_DIAGNOSTIC_PREFIX
+                        + " SLOW_WRITE"
+                        + " generation=" + current.generation
+                        + " bytes=" + bytes
+                        + " duration_ms=" + formatMillis(duration));
+            }
+        } catch (RuntimeException ignored) {
+            /* Diagnostic timing must not alter native-write handling. */
+        } finally {
+            current.writeInProgress = false;
+        }
+    }
+
+    private void logWriterFailure(
+            ResponseContext current,
+            String phase,
+            IOException failure) {
+        try {
+            diagnostic(AUDIO_DIAGNOSTIC_PREFIX
+                    + " WRITER_FAILURE"
+                    + " generation=" + current.generation
+                    + " phase=" + (phase != null ? phase : "UNKNOWN")
+                    + " exception=" + failure.getClass().getName()
+                    + " message=" + diagnosticText(failure.getMessage())
+                    + " write_in_progress=" + current.writeInProgress
+                    + " last_completed_write_ms="
+                    + formatMillis(current.lastCompletedWriteDurationNanos)
+                    + " max_completed_write_ms="
+                    + formatMillis(current.maxCompletedWriteDurationNanos)
+                    + " completed_write_count=" + current.completedWriteCount);
+        } catch (RuntimeException ignored) {
+            /* Diagnostic formatting must not alter writer failure handling. */
+        }
+    }
+
+    private void logStreamSummary(
+            ResponseContext current, IOException failure) {
+        try {
+            long writes = current.completedWriteCount;
+            long averageWriteDuration = writes > 0L
+                    ? current.totalCompletedWriteDurationNanos / writes
+                    : 0L;
+            String reason = current.terminalReason;
+            if (reason == null) {
+                reason = failure != null ? "WRITER_FAILURE" : "DISCONNECT";
+            }
+            diagnostic(AUDIO_DIAGNOSTIC_PREFIX
+                    + " STREAM_SUMMARY"
+                    + " generation=" + current.generation
+                    + " writes=" + writes
+                    + " slow_writes=" + current.slowWriteCount
+                    + " total_write_ms="
+                    + formatMillis(current.totalCompletedWriteDurationNanos)
+                    + " avg_write_ms=" + formatMillis(averageWriteDuration)
+                    + " max_write_ms="
+                    + formatMillis(current.maxCompletedWriteDurationNanos)
+                    + " max_queue_wait_ms="
+                    + formatMillis(current.maxQueueWaitNanos)
+                    + " max_inter_write_gap_ms="
+                    + formatMillis(current.maxInterWriteGapNanos)
+                    + " queue_high_water=" + current.queueHighWaterMark
+                    + " max_consecutive_slow_writes="
+                    + current.maxConsecutiveSlowWrites
+                    + " reason=" + reason);
+        } catch (RuntimeException ignored) {
+            /* Summary output must not alter writer completion. */
+        }
+    }
+
+    private static void logStateTransition(
+            ResponseContext current,
+            ConnectionState from,
+            ConnectionState to,
+            String reason) {
+        try {
+            diagnostic(AUDIO_DIAGNOSTIC_PREFIX
+                    + " STATE"
+                    + " generation=" + current.generation
+                    + " from=" + from
+                    + " to=" + to
+                    + " reason=" + reason);
+        } catch (RuntimeException ignored) {
+            /* Diagnostic formatting must not alter state transitions. */
+        }
+    }
+
+    private static long elapsedNanos(long start, long end) {
+        long elapsed = end - start;
+        return elapsed >= 0L ? elapsed : 0L;
+    }
+
+    private long readDiagnosticClock() {
+        try {
+            return diagnosticClock.nanoTime();
+        } catch (RuntimeException ignored) {
+            return Long.MIN_VALUE;
+        }
+    }
+
+    private static long diagnosticElapsedNanos(long start, long end) {
+        if (start == Long.MIN_VALUE || end == Long.MIN_VALUE) {
+            return 0L;
+        }
+        return elapsedNanos(start, end);
+    }
+
+    private static String formatMillis(long nanos) {
+        return String.format(Locale.ROOT, "%.3f", nanos / 1000000.0d);
+    }
+
+    private static String diagnosticText(String value) {
+        if (value == null) {
+            return "<none>";
+        }
+        return value.replace('\r', ' ').replace('\n', ' ');
+    }
+
+    private static void diagnostic(String message) {
+        try {
+            System.err.println(message);
+        } catch (RuntimeException ignored) {
+            /* Diagnostic output must not alter the audio lifecycle. */
+        }
+    }
+
+    private static void setTerminalReason(
+            ResponseContext current, String reason) {
+        if (current.terminalReason == null) {
+            current.terminalReason = reason;
         }
     }
 

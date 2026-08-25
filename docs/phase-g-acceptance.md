@@ -241,8 +241,65 @@ python .\tools\phase_g_audio_client.py normal `
   --pcm-a C:\Users\tiio\Workspace\phase-g-pcm\a-440hz-4s.pcm
 ```
 
-The client sends each DATA body as 2–960 even PCM bytes, paced at 48000
-bytes/second. It waits for STARTED before DATA and for ENDED after END.
+The client sends each DATA body as 2–960 even PCM bytes against an absolute
+48000-byte/second schedule; a normal 960-byte chunk represents 20 ms. If the
+schedule is more than one current chunk late, the client rebases at the current
+time instead of sending a catch-up burst. It waits for STARTED before DATA and
+for ENDED after END.
+
+For a 10-second diagnostic retest, preserve the final `pacing` lines and record
+the rebase count, maximum lateness, DATA send span, and effective PCM rate. If
+an audible dropout occurs, also record its approximate playback time and count,
+then compare them with any `pacing rebase` event and the reported maximum
+lateness. These measurements diagnose the current pacing path; they do not add
+an initial prebuffer to this procedure.
+
+### EXPERIMENTAL jitter comparison (not an acceptance default)
+
+The optional client experiment keeps both settings at `0` by default. An
+initial prebuffer may be set from 0 through 4 DATA chunks. Bounded catch-up may
+be set from 0 through 3; its value is the maximum consecutive recovery DATA
+chunks in one event, including the late current chunk. A larger stall rebases,
+and exhausting the catch-up budget forces a normal one-chunk wait before more
+DATA. These are client-side bounds, not a guarantee of server/ALSA headroom.
+
+After the unchanged default run has been recorded, a human operator may compare:
+
+```powershell
+python .\tools\phase_g_audio_client.py normal `
+  --host 192.168.11.6 --port 22222 `
+  --pcm-a C:\Users\tiio\Workspace\RobotController-phase-g-fixtures\phase_g_440hz_10s.raw `
+  --prebuffer-chunks 3 --max-catchup-chunks 2
+```
+
+```powershell
+python .\tools\phase_g_audio_client.py normal `
+  --host 192.168.11.6 --port 22222 `
+  --pcm-a C:\Users\tiio\Workspace\RobotController-phase-g-fixtures\phase_g_440hz_10s.raw `
+  --prebuffer-chunks 4 --max-catchup-chunks 2
+```
+
+Candidate C extends only the bounded recovery policy after observed stalls over
+40 ms coincided with rebase and dropout. It retains the four-chunk prebuffer:
+
+```powershell
+python .\tools\phase_g_audio_client.py normal `
+  --host 192.168.11.6 --port 22222 `
+  --pcm-a C:\Users\tiio\Workspace\RobotController-phase-g-fixtures\phase_g_440hz_10s.raw `
+  --prebuffer-chunks 4 --max-catchup-chunks 3
+```
+
+For full 20 ms chunks, Candidate C treats lateness of at most 60 ms as
+recoverable by the client schedule and rebases when it is strictly greater than
+60 ms. This is not a guaranteed 60 ms end-to-end jitter tolerance. Increasing
+the catch-up bound from 2 to 3 does not increase the fixed prebuffer or add
+steady-state latency; it changes recovery behavior only after a transient stall.
+
+Record audible dropout time/count and all `pacing` diagnostics for each run.
+Do not select a final experimental value until the runtime observations have been
+reviewed. Four chunks represent 80 ms of PCM sent initially, but the retained
+headroom is not guaranteed to remain 80 ms because server/native consumption
+starts concurrently.
 
 PASS requires all of:
 
@@ -267,9 +324,9 @@ python .\tools\phase_g_audio_client.py cancel-restart `
   --cancel-after 1.0
 ```
 
-On one TCP connection the client waits for STARTED A, sends one second of A in
-real time, sends CANCEL, waits for CANCELLED, then waits for STARTED B before
-sending B and ending it.
+On one TCP connection the client waits for STARTED A, sends one second's worth
+of A PCM by byte count (48000 bytes for `--cancel-after 1.0`), sends CANCEL,
+waits for CANCELLED, then waits for STARTED B before sending B and ending it.
 
 PASS requires CANCELLED, prompt audible stop of A, no residual/reappearing A,
 STARTED B, distinct 880 Hz B playback with B mouth synchronization, and ENDED B.

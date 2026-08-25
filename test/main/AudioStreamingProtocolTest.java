@@ -1,9 +1,11 @@
 package main;
 
+import java.io.ByteArrayOutputStream;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.EOFException;
 import java.io.IOException;
+import java.io.PrintStream;
 import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
@@ -67,6 +69,9 @@ public final class AudioStreamingProtocolTest {
         });
         run("queue overflow cleanup and recovery", new CheckedRunnable() {
             @Override public void run() throws Exception { testQueueOverflow(); }
+        });
+        run("server audio error diagnostics", new CheckedRunnable() {
+            @Override public void run() throws Exception { testServerAudioErrorDiagnostics(); }
         });
         run("AUDIO_ERROR on START", new CheckedRunnable() {
             @Override public void run() throws Exception { testStartAudioError(); }
@@ -241,6 +246,52 @@ public final class AudioStreamingProtocolTest {
         session.finishNormally();
         assertOperations(second, "drain", "close");
         fixture.awaitWritersTerminated();
+    }
+
+    private static void testServerAudioErrorDiagnostics() throws Exception {
+        String diagnostics = captureDiagnostics(new CheckedRunnable() {
+            @Override public void run() throws Exception {
+                StreamingAudioTestFixture overflowFixture = fixture(1);
+                FakeDevice blocked = overflowFixture.addDevice("diagnostic-server-overflow");
+                blocked.blockWrite();
+                TCPServer overflowServer = new TCPServer(0, overflowFixture.player());
+                Session overflow = openAudio(overflowServer);
+                overflow.sendRecord(START);
+                overflow.expectStatus(STARTED);
+                overflow.sendData(71, 2);
+                blocked.awaitWriteEntered();
+                overflow.sendData(72, 2);
+                overflow.sendData(73, 2);
+                overflow.expectNoRecord();
+                blocked.releaseWrite();
+                overflow.expectError(QUEUE_OVERFLOW);
+                overflow.finishNormally();
+                overflowFixture.awaitWritersTerminated();
+
+                StreamingAudioTestFixture audioFixture = fixture(1);
+                audioFixture.failOpen(new IOException("diagnostic open failure"));
+                Session audio = openAudio(new TCPServer(0, audioFixture.player()));
+                audio.sendRecord(START);
+                audio.expectError(AUDIO_ERROR);
+                audio.expectClosed(true);
+                audioFixture.awaitWritersTerminated();
+
+                StreamingAudioTestFixture protocolFixture = fixture(1);
+                Session protocol = openAudio(new TCPServer(0, protocolFixture.player()));
+                protocol.sendData(74, 2);
+                protocol.expectError(PROTOCOL_ERROR);
+                protocol.expectClosed(true);
+            }
+        });
+
+        assertOccurrenceCount(
+                diagnostics, "[AUDIO_DIAG] SERVER_ERROR error=QUEUE_OVERFLOW", 1);
+        assertOccurrenceCount(
+                diagnostics, "[AUDIO_DIAG] SERVER_ERROR error=AUDIO_ERROR", 1);
+        assertOccurrenceCount(
+                diagnostics, "[AUDIO_DIAG] SERVER_ERROR error=PROTOCOL_ERROR", 1);
+        assertTrue(diagnostics.contains("reason=DATA received while idle."),
+                "protocol diagnostic reason: " + diagnostics);
     }
 
     private static void testStartAudioError() throws Exception {
@@ -495,6 +546,31 @@ public final class AudioStreamingProtocolTest {
         int secondIndex = values.indexOf(second);
         assertTrue(firstIndex >= 0 && secondIndex >= 0 && firstIndex < secondIndex,
                 "Expected " + first + " before " + second + ": " + values);
+    }
+
+    private static String captureDiagnostics(CheckedRunnable runnable) throws Exception {
+        PrintStream original = System.err;
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        PrintStream capture = new PrintStream(bytes, true, "UTF-8");
+        System.setErr(capture);
+        try {
+            runnable.run();
+        } finally {
+            System.setErr(original);
+            capture.close();
+        }
+        return new String(bytes.toByteArray(), "UTF-8");
+    }
+
+    private static void assertOccurrenceCount(String value, String expected, int count) {
+        int actual = 0;
+        int index = 0;
+        while ((index = value.indexOf(expected, index)) >= 0) {
+            actual++;
+            index += expected.length();
+        }
+        assertEquals(Integer.valueOf(count), Integer.valueOf(actual),
+                "diagnostic occurrence count for " + expected);
     }
 
     private static void run(String name, CheckedRunnable runnable) throws Exception {
