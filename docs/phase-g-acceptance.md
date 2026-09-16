@@ -241,8 +241,11 @@ python .\tools\phase_g_audio_client.py normal `
   --pcm-a C:\Users\tiio\Workspace\phase-g-pcm\a-440hz-4s.pcm
 ```
 
-The client sends each DATA body as 2–960 even PCM bytes, paced at 48000
-bytes/second. It waits for STARTED before DATA and for ENDED after END.
+The client sends each DATA body as 2–960 even PCM bytes against an absolute
+48000-byte/second schedule; a normal 960-byte chunk represents 20 ms. If the
+schedule is more than one current chunk late, the client rebases at the current
+time instead of sending a catch-up burst. It waits for STARTED before DATA and
+for ENDED after END.
 
 PASS requires all of:
 
@@ -267,9 +270,9 @@ python .\tools\phase_g_audio_client.py cancel-restart `
   --cancel-after 1.0
 ```
 
-On one TCP connection the client waits for STARTED A, sends one second of A in
-real time, sends CANCEL, waits for CANCELLED, then waits for STARTED B before
-sending B and ending it.
+On one TCP connection the client waits for STARTED A, sends one second's worth
+of A PCM by byte count (48000 bytes for `--cancel-after 1.0`), sends CANCEL,
+waits for CANCELLED, then waits for STARTED B before sending B and ending it.
 
 PASS requires CANCELLED, prompt audible stop of A, no residual/reappearing A,
 STARTED B, distinct 880 Hz B playback with B mouth synchronization, and ENDED B.
