@@ -34,9 +34,13 @@ Sota・CommUなどをTCP経由で制御するJavaプログラムです。従来�
 Windows上のクリーンなチェックアウトとJava 8 JDKを使用します。リポジトリ直下で次を実行します。パスは利用環境に合わせて指定し、出力先にはリポジトリ外の新しい未作成フォルダを選びます。
 
 ```powershell
+git clone https://github.com/social-robotics-lab/RobotController.git
+mkdir lib
+※libに上記の6つのjarをコピー
+mkdir output
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\build_phase_g.ps1 `
-  -DependencyDirectory C:\Users\tiio\Workspace\lib `
-  -OutputDirectory C:\Users\tiio\Workspace\RobotController-docs-build-01
+  -DependencyDirectory lib `
+  -OutputDirectory ../output
 ```
 
 スクリプトはJava・javacがJava 8であること、6依存JARのハッシュ、production baseline `bd299ae1bbc0d0514d5b60a0ca2d45125a01f1d6`との入力同一性、作業ツリー、コンパイルとmanifestを検査します。READMEを編集中の未コミット状態は許可されません。成功時はビルド報告・コンパイラログと次の構成を生成します。再ビルドしたJARのハッシュはビルドごとに記録します。
