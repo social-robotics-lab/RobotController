@@ -14,54 +14,279 @@ Sota・CommUなどをTCP経由で制御するJavaプログラムです。従来�
 - ストリーミングには、対象機のABIに適合するJNIライブラリ`librobotcontroller_alsa.so`とALSA環境が必要です。JNIはALSAの`default`を開き、`/usr/lib/libasound.so.2`を使用します。
 - 従来型`play_wav`には`aplay`が必要です。新型ストリーミングは`aplay`を使用しません。
 
-## 必要なライブラリ
-
-次の6つのJARを用意します。受入時のSHA-256は[受入結果](docs/phase-g-result-2026-09-16.md)および[ビルドスクリプト](tools/build_phase_g.ps1)に記載されています。
-
-| ファイル | 用途・入手上の注意 |
-|---|---|
-| `core-2.2.jar` | 既存Java実装の依存ライブラリ |
-| `gson-2.8.5.jar` | 既存Java実装の依存ライブラリ |
-| `javase-2.2.jar` | 既存Java実装の依存ライブラリ |
-| `jna-4.1.0.jar` | 既存Java実装の依存ライブラリ |
-| `json-20180813.jar` | JSON処理 |
-| `sotalib.jar` | VSTONE公式Java API。[公式サンプル](https://github.com/vstoneofficial/SotaSample)を参照 |
-
-未確認の別バージョンや既存実機のJARを自動的に置き換えないでください。[RobotController_bin](https://github.com/social-robotics-lab/RobotController_bin)の配布JARが新型ストリーミング対応版かは確認できていません。
-
 ## ビルド方法
 
-Windows上のクリーンなチェックアウトとJava 8 JDKを使用します。リポジトリ直下で次を実行します。パスは利用環境に合わせて指定し、出力先にはリポジトリ外の新しい未作成フォルダを選びます。
+ここで扱うのはビルドと生成物の静的検証までです。Java・JNIの既存機能は変更しません。以下のSotaへのSSH/SCP・Edison上のコマンドは**操作者本人が手動で実行**します。自動エージェントは実機へ接続しません。既存ファイルの変更・削除・上書き、JVM起動、音声再生、サーボ・LED操作、既存サービスの停止、ALSAデバイスへの書き込みは今回の作業に含めません。
+
+### 依存JARの準備と照合
+
+Sota標準ライブラリの格納場所は `/home/vstone/lib` です。実機で確認されたのは `core-2.2.jar`、`javase-2.2.jar`、`jna-4.1.0.jar`、`sotalib.jar`、`gson-2.6.1.jar` ですが、現在の受入済みビルドには次の**6つすべて**が必要です。
+
+| ファイル | 取得元・注意 |
+|---|---|
+| `core-2.2.jar` | Sotaの `/home/vstone/lib` からコピー |
+| `gson-2.8.5.jar` | 別途取得。Sotaの2.6.1では代用不可 |
+| `javase-2.2.jar` | Sotaの `/home/vstone/lib` からコピー |
+| `jna-4.1.0.jar` | Sotaの `/home/vstone/lib` からコピー |
+| `json-20180813.jar` | 別途取得。確認済みの標準JAR一覧には存在しない |
+| `sotalib.jar` | Sotaの `/home/vstone/lib` からコピー。[VSTONE公式サンプル](https://github.com/vstoneofficial/SotaSample)も参照 |
+
+不足する2つの案内ページは [Gson 2.8.5（Maven Central）](https://central.sonatype.com/artifact/com.google.code.gson/gson/2.8.5) と [JSON 20180813](https://mvnrepository.com/artifact/org.json/json/20180813) です。Maven Centralの取得先は [GsonのJAR](https://repo.maven.apache.org/maven2/com/google/code/gson/gson/2.8.5/gson-2.8.5.jar)、[JSONのJAR](https://repo.maven.apache.org/maven2/org/json/json/20180813/json-20180813.jar) です。PCでダウンロードし、必要ならEdisonへ転送してください。古いTLS環境から取得できなくても検証を無効化しないでください。
+
+**6つとも**以下のSHA-256と照合します。値の基準は変更しない [Windowsビルドスクリプト](tools/build_phase_g.ps1) です。ファイル名を変更して別バージョンを同じものとして扱ってはいけません。不一致なら中止してファイル名・実測ハッシュ・取得元を報告し、要件の緩和や別JARへの自動切替を行いません。
+
+| ファイル | SHA-256 |
+|---|---|
+| `core-2.2.jar` | `C6963B3DDC11B8A1FF4EBF65E93314CC6AF341685F70C98C752094FA59BEF492` |
+| `gson-2.8.5.jar` | `233A0149FC365C9F6EDBD683CFE266B19BDC773BE98EABDAF6B3C924B48E7D81` |
+| `javase-2.2.jar` | `CC32F41B3FCFF840BCDD08F14D24E7C170E382BD5C5A81A072AC075E66CC8426` |
+| `jna-4.1.0.jar` | `1AA37E9EA6BAA0EE152D89509F758F0847EAC66EC179B955CAFE0919E540A92E` |
+| `json-20180813.jar` | `518080049BA83181914419D11A25D9BC9833A2D729B6A6E7469FA52851356DA8` |
+| `sotalib.jar` | `7C3B45F42139A651E2C5D021C18EBF217CDB9BE5AF25569E910221D88D71BFFA` |
+
+Windowsでは、作業親フォルダで次を手動実行します。`SOTA_HOST` は操作者が実際の接続先に置換します。依存用フォルダは未作成の名前を選び、既存JARへ上書きしません。
 
 ```powershell
-git clone https://github.com/social-robotics-lab/RobotController.git
-mkdir lib
-※libに上記の6つのjarをコピー
-mkdir output
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\build_phase_g.ps1 `
-  -DependencyDirectory lib `
-  -OutputDirectory ../output
+New-Item -ItemType Directory -Path ./robotcontroller-deps -ErrorAction Stop
+foreach ($name in @("core-2.2.jar", "javase-2.2.jar", "jna-4.1.0.jar", "sotalib.jar")) {
+  scp "root@${SOTA_HOST}:/home/vstone/lib/$name" ./robotcontroller-deps/
+  if ($LASTEXITCODE -ne 0) { throw "SCP失敗: $name" }
+}
+# 取得したgson-2.8.5.jarとjson-20180813.jarも、このフォルダに保存します。
+Get-FileHash -Algorithm SHA256 ./robotcontroller-deps/*.jar
 ```
 
-スクリプトはJava・javacがJava 8であること、6依存JARのハッシュ、production baseline `bd299ae1bbc0d0514d5b60a0ca2d45125a01f1d6`との入力同一性、作業ツリー、コンパイルとmanifestを検査します。READMEを編集中の未コミット状態は許可されません。成功時はビルド報告・コンパイラログと次の構成を生成します。再ビルドしたJARのハッシュはビルドごとに記録します。
+macOSでは、作業親フォルダで次を手動実行します。
+
+```sh
+(
+set -eu
+mkdir ./robotcontroller-deps
+for name in core-2.2.jar javase-2.2.jar jna-4.1.0.jar sotalib.jar; do
+  scp "root@${SOTA_HOST}:/home/vstone/lib/$name" ./robotcontroller-deps/
+done
+# 取得したgson-2.8.5.jarとjson-20180813.jarも、このフォルダに保存します。
+shasum -a 256 ./robotcontroller-deps/*.jar
+)
+```
+
+Edison上では次のようにコピーします。`/home/root/robotcontroller-deps` は未作成であることを確認し、既存なら別の名前を選びます。`/home/vstone/lib` は読み取り元としてのみ使い、書き込み・移動・削除しません。
+
+```sh
+(
+set -eu
+mkdir /home/root/robotcontroller-deps
+cp /home/vstone/lib/core-2.2.jar /home/root/robotcontroller-deps/
+cp /home/vstone/lib/javase-2.2.jar /home/root/robotcontroller-deps/
+cp /home/vstone/lib/jna-4.1.0.jar /home/root/robotcontroller-deps/
+cp /home/vstone/lib/sotalib.jar /home/root/robotcontroller-deps/
+# PCで取得した不足の2つも、操作者がこの新規フォルダへSCP等で転送します。
+sha256sum /home/root/robotcontroller-deps/*.jar
+)
+```
+
+上のハッシュ表示は表と手動照合します。各ビルドスクリプトも6つを自動照合し、不一致で停止します。[RobotController_bin](https://github.com/social-robotics-lab/RobotController_bin)の配布JARが新型ストリーミング対応版かは未確認です。
+
+### WindowsでのJavaビルド
+
+Java 8 **JDK** の `java`・`javac`・`jar` をPATHに設定します。未導入なら [Temurin JDK 8](https://adoptium.net/temurin/releases/?version=8) などからPCのOS・CPUに適合するJDKを用意します。JREだけではビルドできません。
+
+上記の依存用フォルダを置いた作業親フォルダで、次を実行します。clone先と出力先は未作成の名前を選びます。
+
+```powershell
+git clone https://github.com/social-robotics-lab/RobotController.git RobotController-src
+if ($LASTEXITCODE -ne 0) { throw "clone失敗" }
+Set-Location RobotController-src
+java -version
+javac -version
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./tools/build_phase_g.ps1 `
+  -DependencyDirectory ../robotcontroller-deps `
+  -OutputDirectory ../robotcontroller-java-build
+```
+
+出力先 `../robotcontroller-java-build` はスクリプトが自動生成するため、事前作成しません。依存用フォルダはリポジトリの隣です。既存の [tools/build_phase_g.ps1](tools/build_phase_g.ps1) は変更しません。READMEの未コミット編集や無関係な未追跡ファイルがあると停止するため、クリーンなチェックアウトを使います。
+
+### macOS・LinuxでのJavaビルド
+
+[tools/build_java.sh](tools/build_java.sh) をPOSIXシェルで実行します。macOSでは `/usr/bin/sh`、Edisonでは利用可能な `/bin/sh` を使えます。Bash固有構文や実行権限の付与は不要です。必要なものはJava 8 JDK、Git（production baselineを含む履歴）、標準的なシェル用ツール、および `sha256sum` またはmacOSの `shasum -a 256` です。浅いcloneは使わないでください。
+
+macOSでJDK 8を導入後、上記と同じ作業親フォルダから実行する例です。
+
+```sh
+(
+set -eu
+git clone https://github.com/social-robotics-lab/RobotController.git RobotController-src
+cd RobotController-src
+# main統合前は今回の作業ブランチを選びます。
+git checkout codex/portable-java-build
+export JAVA_HOME=$(/usr/libexec/java_home -v 1.8)
+/usr/bin/sh tools/build_java.sh \
+  --dependency-dir ../robotcontroller-deps \
+  --output-dir ../robotcontroller-java-build
+)
+```
+
+オプションは `--dependency-dir DIR` と `--output-dir NEW_DIR` の両方が必須、`--help` で説明を表示します。相対パスは**呼び出した作業ディレクトリ基準**です。出力先はリポジトリ外の未作成パスを指定し、その親ディレクトリはあらかじめ存在する必要があります。空フォルダやシンボリックリンクを含め、既存の出力先は再利用しません。パス中のコロン・改行は非対応です。
+
+`JAVA_HOME` を指定すればその `bin/java`・`bin/javac`・`bin/jar`、未指定ならPATH上のものを使用します。javaとjavacの両方が1.8でなければ停止します。production baseline `bd299ae1bbc0d0514d5b60a0ca2d45125a01f1d6` の祖先関係、保護対象入力の同一性・未追跡入力の不存在、クリーンな作業ツリー、6依存JARのハッシュを検査してから出力を作成します。既存Windowsスクリプトの制約は変更しません。
+
+### Javaの成果物と静的検証
+
+両OSのビルドは同じ `src/` の全JavaソースをUTF-8・Java 8ターゲット・`-Xlint:all` でコンパイルし、出力先内に次の構成を生成します。
 
 ```text
 RobotController/
-  RobotController.jar
-  System.properties
-  lib/
-    core-2.2.jar
-    gson-2.8.5.jar
-    javase-2.2.jar
-    jna-4.1.0.jar
-    json-20180813.jar
-    sotalib.jar
-  native/                       （PCビルド直後は空）
+├── RobotController.jar
+├── System.properties
+├── lib/
+│   ├── core-2.2.jar
+│   ├── gson-2.8.5.jar
+│   ├── javase-2.2.jar
+│   ├── jna-4.1.0.jar
+│   ├── json-20180813.jar
+│   └── sotalib.jar
+└── native/                       （Javaビルド直後は空）
 ```
 
-JNIライブラリはこのスクリプトではビルド・コピーしません。[native/Makefile](native/Makefile)はJava 8 JDKの`javac`・`javah`、ALSAヘッダ、Cコンパイラ、`libasound.so.2`を必要とし、`native/build/librobotcontroller_alsa.so`を生成する別のビルド手順です。Phase Gの再現では新たに実機でビルドせず、出所とハッシュを確認した既存のPhase F.2ライブラリを人間が配置します。
+Manifestの `Main-Class` は `main.App`、`Class-Path` は次の順序です。JAR内では長い行が継続行に折り返されます。
+
+```text
+lib/core-2.2.jar lib/gson-2.8.5.jar lib/javase-2.2.jar lib/jna-4.1.0.jar lib/json-20180813.jar lib/sotalib.jar
+```
+
+シェル版はJARを静的に展開して、全クラスの一覧・内容がコンパイラ出力と一致すること、全クラスのmajor versionが52（Java 8）であること、`main/App.class` とManifest、コピー後の依存ハッシュ、設定ファイルの同一性を検証します。結果・HEAD・JDKバージョン・JARと設定ファイルのハッシュは `java-build-report.txt`、警告は `javac.log`、JAR処理は `jar.log`、クラス一覧は `classes.txt` に記録します。`classes/`・`inspect/` などは配布フォルダの外側です。失敗した出力は調査用に残し、最終行の `Build status: PASS` がないものは採用しません。再試行は新しい出力先を使います。
+
+Windows版の報告は `phase-g-build-report.txt` です。Windows版と比較するときは、ソース一覧、クラス一覧（過去の受入時は23ソース・49クラス）、展開したManifest、6依存JARを照合します。JAR全体のSHA-256は生成日時・JDK等で変わり得るため一致を要求しません。
+
+### EdisonのJNIビルド環境の準備
+
+[native/Makefile](native/Makefile) を変更せず使用します。必要条件はIntel EdisonのYocto Linux、対象CPU/ABIに対応したJava 8 JDK（`javac`・`javah`・JNIヘッダ）、GCC、make、ALSA開発ヘッダ、既存の `/usr/lib/libasound.so.2` です。検証には `file`・`readelf`（binutils）・`sha256sum` も用意します。
+
+過去のJDKは `/home/vstone/java/jdk1.8.0_40`、ALSAヘッダは `/home/root/alsa-pcm-gate/packages/alsa-lib-dev-unpack/usr/include` でした。**これは過去の例で、別の実機に存在する保証はありません。** 操作者が以下を確認します。
+
+```sh
+cat /etc/os-release
+uname -m
+command -v git gcc make file readelf sha256sum
+gcc --version
+gcc -dumpmachine
+make --version
+# 実際に確認したパスを設定します（以下は過去の例）。
+export JAVA_HOME=/home/vstone/java/jdk1.8.0_40
+export ALSA_INCLUDE_DIR=/home/root/alsa-pcm-gate/packages/alsa-lib-dev-unpack/usr/include
+"$JAVA_HOME/bin/java" -version
+"$JAVA_HOME/bin/javac" -version
+"$JAVA_HOME/bin/javah" -version
+test -f "$JAVA_HOME/include/jni.h" && test -f "$JAVA_HOME/include/linux/jni_md.h"
+test -f "$ALSA_INCLUDE_DIR/alsa/asoundlib.h"
+test -f /usr/lib/libasound.so.2
+file "$JAVA_HOME/bin/java" /usr/lib/libasound.so.2
+readelf -h /usr/lib/libasound.so.2
+# opkgが存在する場合のみ、導入済みパッケージを読み取り確認します。
+command -v opkg >/dev/null && opkg list-installed
+```
+
+不足する場合は次のように準備します。システムJDK・ランタイムライブラリは更新・置換しません。
+
+- JDK: 実機イメージの提供元または信頼できる保管済み配布物から、Edisonの32-bit x86・Yoctoのlibcに適合するJava 8 **JDK** を取得し、新規作業フォルダへ展開します。配布元のハッシュ・利用条件を確認し、`JAVA_HOME` を指定します。PC用JDKや64-bit Linux JDKを流用しません。Edison用JDK配布URLは未確認です。
+- GCC・make: 同じEdisonイメージのYocto BSP/SDK・保管済みフィードで、対象アーキテクチャ・libc・依存関係が一致する開発ツールを準備します。実機ビルドには**Edisonで実行できる**コンパイラが必要で、PC用クロスコンパイラだけでは不足します。取得URLと不足時の具体的な導入パッケージ一式は未確認です。適合性を確認できなければ作業を止め、イメージ情報・不足項目を報告します。
+- ALSA: 同じYocto環境と互換性のある `alsa-lib-dev` を使います。過去は **1.0.28-r0** でしたが、実機のALSAランタイム・アーキテクチャとの互換性を確認せず他版を導入しません。提供元のBSP/SDKや保存済みパッケージから取得し、版・アーキテクチャ・依存関係・出所・ハッシュを確認して、新規の `packages/` 内だけへ展開します。`opkg install` や `/usr/include`・`/usr/lib` への配置は行いません。IPK等の形式に応じてPC側で内容一覧と展開先を確認してから展開し、得られた `usr/include` を `ALSA_INCLUDE_DIR` に指定します。新しい `libasound.so` はコピーせず、Makefileが既存の `/usr/lib/libasound.so.2` を直接リンクします。**互換パッケージの取得URLは未確認**です。推測URLや他ディストリビューション用開発パッケージは使いません。
+
+Yoctoのパッケージはビルド対象・設定に依存します。[Yoctoのパッケージ資料](https://docs.yoctoproject.org/4.0.26/dev-manual/packages.html)は一般的な説明であり、現在のディストリビューション向け手順を古いEdisonにそのまま適用するものではありません。必要な配布物が見つからない場合は環境準備が残課題です。
+
+### EdisonでJavaとJNIをビルドする手順（操作者用）
+
+依存6JARと上記の開発環境を準備してから、既存配置とは別の新規作業ディレクトリで行います。`work` の名前は毎回変更し、以降は同じシェル内で実行します。以下のサブシェルは途中の失敗で停止します。
+
+```sh
+(
+set -eu
+work=/home/root/robotcontroller-build-YYYYMMDD-01
+mkdir "$work"
+cd "$work"
+git clone https://github.com/social-robotics-lab/RobotController.git source
+cd source
+# main統合前は、今回の作業ブランチを明示します。
+git checkout codex/portable-java-build
+git rev-parse HEAD
+# 実機で確認済みのパスを設定します。
+export JAVA_HOME=/home/vstone/java/jdk1.8.0_40
+export ALSA_INCLUDE_DIR=/home/root/alsa-pcm-gate/packages/alsa-lib-dev-unpack/usr/include
+sh tools/build_java.sh \
+  --dependency-dir /home/root/robotcontroller-deps \
+  --output-dir "$work/java-output"
+# 必ずJavaビルド後に、未ビルドの隔離ソースで実行します。
+test ! -e native/build && test ! -L native/build
+test ! -e native/generated && test ! -L native/generated
+if make -C native \
+  JAVA_HOME="$JAVA_HOME" \
+  ALSA_INCLUDE_DIR="$ALSA_INCLUDE_DIR" > "$work/jni-build.log" 2>&1; then
+  cat "$work/jni-build.log"
+else
+  cat "$work/jni-build.log" >&2
+  exit 1
+fi
+test -f native/build/librobotcontroller_alsa.so
+printf 'JNI make exit status: 0\n' > "$work/jni-build-status.txt"
+)
+```
+
+Java版は `java-output/RobotController/RobotController.jar`、JNI版は `source/native/build/librobotcontroller_alsa.so` に生成されます。この手順は両者を既存の稼働版へコピーしません。
+
+**Gitなし・古いTLSの場合の代替**: PCでGitHubから通常cloneし、今回のブランチをcheckoutしてHEADを記録します。クリーンなcloneを `.git` と全履歴を含めてアーカイブ化し、操作者がSCP等でEdisonの新規作業フォルダへ転送します。Edison側でアーカイブ一覧と展開先を確認してから、新規の `source` として展開します。ソースZIPだけではproduction baseline検証に必要な履歴がないため不足します。PCで `git bundle create RobotController.bundle --all` として転送し、Edisonでローカルcloneする方法も使えます。EdisonにGit自体がなければ、互換GitをBSP/SDK等から準備する必要があります。Gitなしで検証を飛ばすモードはありません。
+
+### Edison生成物の静的検証（起動しない）
+
+上記と同じ `work` の絶対パスを設定し、操作者が実行します。
+
+```sh
+(
+set -eu
+work=/home/root/robotcontroller-build-YYYYMMDD-01
+candidate="$work/java-output/RobotController"
+so="$work/source/native/build/librobotcontroller_alsa.so"
+test -f "$candidate/RobotController.jar"
+test -f "$so"
+cat "$work/java-output/java-build-report.txt"
+cat "$work/java-output/manifest-unfolded.txt"
+cat "$work/java-output/classes.txt"
+cat "$work/java-output/javac.log"
+cat "$work/jni-build.log"
+cat "$work/jni-build-status.txt"
+sha256sum "$candidate/RobotController.jar" "$candidate/System.properties" \
+  "$candidate"/lib/*.jar "$so" > "$work/artifact-sha256.txt"
+cat "$work/artifact-sha256.txt"
+file "$so" /usr/lib/libasound.so.2
+readelf -h "$so" > "$work/jni-elf-header.txt"
+readelf -d "$so" > "$work/jni-dynamic.txt"
+readelf -Ws "$so" > "$work/jni-symbols.txt"
+cat "$work/jni-elf-header.txt" "$work/jni-dynamic.txt"
+grep 'Java_utils_AlsaPcm_native' "$work/jni-symbols.txt"
+grep 'snd_' "$work/jni-symbols.txt"
+)
+```
+
+ハッシュは上表と照合し、Java報告の最終行付近の `Build status: PASS`、全クラスmajor version 52、Manifestの2項目、JAR内クラス一覧、コンパイルログとmake終了値0を確認します。警告は内容を確認し、未確認の警告を成功扱いしません。
+
+ELFヘッダは `Type: DYN` の共有ライブラリであること、`Class`・`Data`・`Machine`・ABIが対象Edisonと既存 `libasound.so.2` に適合することを確認します（過去の対象は32-bit x86、ELF32・little endian・Intel 80386）。`NEEDED` に `libasound.so.2` があり、その他の依存ライブラリも実機上のものと適合することを確認します。`readelf -Ws` では以下の7つが**定義済みのGLOBALシンボル**（UNDではない）であることを確認します。
+
+```text
+Java_utils_AlsaPcm_nativeOpen
+Java_utils_AlsaPcm_nativeWrite
+Java_utils_AlsaPcm_nativeGetBufferFrames
+Java_utils_AlsaPcm_nativeGetPeriodFrames
+Java_utils_AlsaPcm_nativeDrain
+Java_utils_AlsaPcm_nativeDrop
+Java_utils_AlsaPcm_nativeClose
+```
+
+ALSAの `snd_pcm_open`・`snd_pcm_set_params`・`snd_pcm_get_params`・`snd_pcm_writei`・`snd_pcm_recover`・`snd_pcm_drain`・`snd_pcm_drop`・`snd_pcm_close`・`snd_strerror` は動的リンク用の未定義参照として存在し、実機のALSAで提供されることを確認します。静的検証では `ldd` やJVMによるライブラリロードは使いません。
+
+再ビルドした `.so` のSHA-256は記録しますが、過去の受入済みバイナリとの完全一致は要件ではありません。異なるハッシュの生成物を稼働版へ自動的に置き換えません。**ビルド成功は実機動作確認ではありません。** macOS・Edisonの実環境でのビルドとABI確認は操作者による結果待ちです。実機での起動・動作検証とmain統合は、今回とは別に結果を確認してから扱います。
 
 ## Sotaへの配置と起動（人間による手動操作のみ）
+
+この節は既存の運用説明です。今回のビルド確認ではここに進まず、生成物の静的検証で止めて結果を報告してください。再ビルドしたJNIを過去の受入済みライブラリと同等の動作確認済みと扱ってはいけません。
 
 **起動するだけで既存の初期化処理がロボットに作用します。** Sotaでは接続、`ServoOn`、初期姿勢、torque・LED設定が行われます。TCP待受と初期化は別スレッドであり、接続成功はロボット初期化完了の保証ではありません。安全な作業場所と操作者による確認が必要です。
 
@@ -339,6 +564,9 @@ def receive_stream_response(sock):
 
 ## 関連ドキュメントと検証
 
+- [ビルド環境整備のオフライン検証結果・残課題](docs/build-environment-validation-2026-11-02.md)
+- [macOS・Linux用Javaビルド](tools/build_java.sh)
+- [ビルドスクリプトのオフライン試験](tools/test_build_java.sh)（実行: `sh tools/test_build_java.sh /path/to/deps`。ローカルcloneと生成物を一時フォルダに残します。実機には接続しません）
 - [Phase Gの手動受入手順・停止条件](docs/phase-g-acceptance.md)
 - [2026年9月16日の実機受入結果](docs/phase-g-result-2026-09-16.md)
 - [PC用ビルドスクリプト](tools/build_phase_g.ps1)
