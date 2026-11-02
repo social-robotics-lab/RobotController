@@ -81,11 +81,13 @@ cp /home/vstone/lib/javase-2.2.jar /home/root/robotcontroller-deps/
 cp /home/vstone/lib/jna-4.1.0.jar /home/root/robotcontroller-deps/
 cp /home/vstone/lib/sotalib.jar /home/root/robotcontroller-deps/
 # PCで取得した不足の2つも、操作者がこの新規フォルダへSCP等で転送します。
-sha256sum /home/root/robotcontroller-deps/*.jar
+for jar in /home/root/robotcontroller-deps/*.jar; do
+  openssl dgst -sha256 "$jar"
+done
 )
 ```
 
-上のハッシュ表示は表と手動照合します。各ビルドスクリプトも6つを自動照合し、不一致で停止します。[RobotController_bin](https://github.com/social-robotics-lab/RobotController_bin)の配布JARが新型ストリーミング対応版かは未確認です。
+上のハッシュ表示は表と手動照合します。Edisonで `sha256sum`・`shasum` がない場合も、確認済みの `openssl dgst -sha256` を利用できます。OpenSSLの終了コードが0で、出力末尾が64桁の16進数であることを確認してください。大文字・小文字は区別しません。各ビルドスクリプトも6つを自動照合し、不一致で停止します。[RobotController_bin](https://github.com/social-robotics-lab/RobotController_bin)の配布JARが新型ストリーミング対応版かは未確認です。
 
 ### WindowsでのJavaビルド
 
@@ -108,7 +110,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./tools/build_phase_g.ps
 
 ### macOS・LinuxでのJavaビルド
 
-[tools/build_java.sh](tools/build_java.sh) をPOSIXシェルで実行します。macOSでは `/usr/bin/sh`、Edisonでは利用可能な `/bin/sh` を使えます。Bash固有構文や実行権限の付与は不要です。必要なものはJava 8 JDK、Git（production baselineを含む履歴）、標準的なシェル用ツール、および `sha256sum` またはmacOSの `shasum -a 256` です。浅いcloneは使わないでください。
+[tools/build_java.sh](tools/build_java.sh) をPOSIXシェルで実行します。macOSでは `/usr/bin/sh`、Edisonでは利用可能な `/bin/sh` を使えます。Bash固有構文や実行権限の付与は不要です。必要なものはJava 8 JDK、Git（production baselineを含む履歴）、標準的なシェル用ツール、およびSHA-256計算ツールです。スクリプトは `sha256sum` → `shasum -a 256` → `openssl dgst -sha256` の順に利用可能なものを選びます。選んだツールが計算に失敗した場合や64桁の16進数を取得できない場合は停止し、別ツールへ切り替えてエラーを隠しません。浅いcloneは使わないでください。
 
 macOSでJDK 8を導入後、上記と同じ作業親フォルダから実行する例です。
 
@@ -160,14 +162,14 @@ Windows版の報告は `phase-g-build-report.txt` です。Windows版と比較�
 
 ### EdisonのJNIビルド環境の準備
 
-[native/Makefile](native/Makefile) を変更せず使用します。必要条件はIntel EdisonのYocto Linux、対象CPU/ABIに対応したJava 8 JDK（`javac`・`javah`・JNIヘッダ）、GCC、make、ALSA開発ヘッダ、既存の `/usr/lib/libasound.so.2` です。検証には `file`・`readelf`（binutils）・`sha256sum` も用意します。
+[native/Makefile](native/Makefile) を変更せず使用します。必要条件はIntel EdisonのYocto Linux、対象CPU/ABIに対応したJava 8 JDK（`javac`・`javah`・JNIヘッダ）、GCC、make、ALSA開発ヘッダ、既存の `/usr/lib/libasound.so.2` です。検証には `file`・`readelf`（binutils）と、SHA-256計算用の `openssl` 等も用意します。
 
 過去のJDKは `/home/vstone/java/jdk1.8.0_40`、ALSAヘッダは `/home/root/alsa-pcm-gate/packages/alsa-lib-dev-unpack/usr/include` でした。**これは過去の例で、別の実機に存在する保証はありません。** 操作者が以下を確認します。
 
 ```sh
 cat /etc/os-release
 uname -m
-command -v git gcc make file readelf sha256sum
+command -v git gcc make file readelf openssl
 gcc --version
 gcc -dumpmachine
 make --version
@@ -253,8 +255,10 @@ cat "$work/java-output/classes.txt"
 cat "$work/java-output/javac.log"
 cat "$work/jni-build.log"
 cat "$work/jni-build-status.txt"
-sha256sum "$candidate/RobotController.jar" "$candidate/System.properties" \
-  "$candidate"/lib/*.jar "$so" > "$work/artifact-sha256.txt"
+for artifact in "$candidate/RobotController.jar" "$candidate/System.properties" \
+  "$candidate"/lib/*.jar "$so"; do
+  openssl dgst -sha256 "$artifact" || exit 1
+done > "$work/artifact-sha256.txt"
 cat "$work/artifact-sha256.txt"
 file "$so" /usr/lib/libasound.so.2
 readelf -h "$so" > "$work/jni-elf-header.txt"

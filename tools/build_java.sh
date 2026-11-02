@@ -46,12 +46,31 @@ for tool in git find sort awk od cmp cp date tr sed; do
     command -v "$tool" >/dev/null 2>&1 || fail "Required command is unavailable: $tool"
 done
 if command -v sha256sum >/dev/null 2>&1; then
-    hash() { sha256sum < "$1" | awk '{print toupper($1)}'; }
+    hash_tool=sha256sum
 elif command -v shasum >/dev/null 2>&1; then
-    hash() { shasum -a 256 < "$1" | awk '{print toupper($1)}'; }
+    hash_tool=shasum
+elif command -v openssl >/dev/null 2>&1; then
+    hash_tool=openssl
 else
-    fail 'sha256sum or shasum is required'
+    fail 'sha256sum, shasum or openssl is required'
 fi
+hash() {
+    # Capture the producer's status before parsing; a pipeline would hide it.
+    field=first
+    case $hash_tool in
+        sha256sum) raw=$(sha256sum < "$1") || fail "SHA-256 calculation failed: $1" ;;
+        shasum) raw=$(shasum -a 256 < "$1") || fail "SHA-256 calculation failed: $1" ;;
+        openssl)
+            raw=$(openssl dgst -sha256 < "$1") || fail "OpenSSL SHA-256 calculation failed: $1"
+            field=last ;;
+    esac
+    printf '%s\n' "$raw" | awk -v field="$field" '
+        NR==1 {digest=(field=="last" ? $NF : $1)}
+        END {
+            if (NR!=1 || length(digest)!=64 || digest !~ /^[0-9a-fA-F]+$/) exit 1
+            print toupper(digest)
+        }' || fail "Invalid SHA-256 output from $hash_tool: $1"
+}
 if [ -n "${JAVA_HOME:-}" ]; then
     java=$JAVA_HOME/bin/java; javac=$JAVA_HOME/bin/javac; jar=$JAVA_HOME/bin/jar
 else
@@ -150,10 +169,12 @@ for entry in $dependencies; do
     printf '%s SHA-256 %s PASS\n' "$dep" "$actual" >> "$report"
 done
 IFS=$old_ifs
+jar_hash=$(hash "$artifact") || fail 'Cannot hash generated JAR'
+properties_hash=$(hash "$candidate/System.properties") || fail 'Cannot hash copied properties'
 {
     printf 'Generated class count: %s\nClass inventory and all major versions (52): PASS\nCompiler errors: 0\n' "$class_count"
     printf 'Manifest Main-Class: main.App PASS\nManifest Class-Path: %s PASS\n' "$manifest_cp"
-    printf 'RobotController.jar SHA-256: %s\nSystem.properties SHA-256: %s\n' "$(hash "$artifact")" "$(hash "$candidate/System.properties")"
+    printf 'RobotController.jar SHA-256: %s\nSystem.properties SHA-256: %s\n' "$jar_hash" "$properties_hash"
     printf 'Native directory: EMPTY\nBuild status: PASS\n'
 } >> "$report"
 trap - 1 2 3 15
