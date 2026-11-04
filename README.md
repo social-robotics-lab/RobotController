@@ -164,35 +164,62 @@ Windows版の報告は `phase-g-build-report.txt` です。Windows版と比較�
 
 [native/Makefile](native/Makefile) を変更せず使用します。必要条件はIntel EdisonのYocto Linux、対象CPU/ABIに対応したJava 8 JDK（`javac`・`javah`・JNIヘッダ）、GCC、make、ALSA開発ヘッダ、既存の `/usr/lib/libasound.so.2` です。検証には `file`・`readelf`（binutils）と、SHA-256計算用の `openssl` 等も用意します。
 
-過去のJDKは `/home/vstone/java/jdk1.8.0_40`、ALSAヘッダは `/home/root/alsa-pcm-gate/packages/alsa-lib-dev-unpack/usr/include` でした。**これは過去の例で、別の実機に存在する保証はありません。** 操作者が以下を確認します。
+操作者によるEdison実ビルドではJava 8 JDK **1.8.0_40**、GCC **4.9.1**、出荷時の `alsa-lib` **1.0.28-r0 / core2-32** を使用しました。JDKのパス例は `/home/vstone/java/jdk1.8.0_40` です。別の実機ではパス・版・アーキテクチャを確認してください。ALSAヘッダは後述の新規作業フォルダに準備します。
 
 ```sh
 cat /etc/os-release
 uname -m
-command -v git gcc make file readelf openssl
+command -v git gcc make file readelf openssl opkg ar tar
 gcc --version
 gcc -dumpmachine
 make --version
 # 実際に確認したパスを設定します（以下は過去の例）。
 export JAVA_HOME=/home/vstone/java/jdk1.8.0_40
-export ALSA_INCLUDE_DIR=/home/root/alsa-pcm-gate/packages/alsa-lib-dev-unpack/usr/include
 "$JAVA_HOME/bin/java" -version
 "$JAVA_HOME/bin/javac" -version
 "$JAVA_HOME/bin/javah" -version
 test -f "$JAVA_HOME/include/jni.h" && test -f "$JAVA_HOME/include/linux/jni_md.h"
-test -f "$ALSA_INCLUDE_DIR/alsa/asoundlib.h"
 test -f /usr/lib/libasound.so.2
 file "$JAVA_HOME/bin/java" /usr/lib/libasound.so.2
 readelf -h /usr/lib/libasound.so.2
 # opkgが存在する場合のみ、導入済みパッケージを読み取り確認します。
 command -v opkg >/dev/null && opkg list-installed
+opkg print-architecture
 ```
 
 不足する場合は次のように準備します。システムJDK・ランタイムライブラリは更新・置換しません。
 
 - JDK: 実機イメージの提供元または信頼できる保管済み配布物から、Edisonの32-bit x86・Yoctoのlibcに適合するJava 8 **JDK** を取得し、新規作業フォルダへ展開します。配布元のハッシュ・利用条件を確認し、`JAVA_HOME` を指定します。PC用JDKや64-bit Linux JDKを流用しません。Edison用JDK配布URLは未確認です。
 - GCC・make: 同じEdisonイメージのYocto BSP/SDK・保管済みフィードで、対象アーキテクチャ・libc・依存関係が一致する開発ツールを準備します。実機ビルドには**Edisonで実行できる**コンパイラが必要で、PC用クロスコンパイラだけでは不足します。取得URLと不足時の具体的な導入パッケージ一式は未確認です。適合性を確認できなければ作業を止め、イメージ情報・不足項目を報告します。
-- ALSA: 同じYocto環境と互換性のある `alsa-lib-dev` を使います。過去は **1.0.28-r0** でしたが、実機のALSAランタイム・アーキテクチャとの互換性を確認せず他版を導入しません。提供元のBSP/SDKや保存済みパッケージから取得し、版・アーキテクチャ・依存関係・出所・ハッシュを確認して、新規の `packages/` 内だけへ展開します。`opkg install` や `/usr/include`・`/usr/lib` への配置は行いません。IPK等の形式に応じてPC側で内容一覧と展開先を確認してから展開し、得られた `usr/include` を `ALSA_INCLUDE_DIR` に指定します。新しい `libasound.so` はコピーせず、Makefileが既存の `/usr/lib/libasound.so.2` を直接リンクします。**互換パッケージの取得URLは未確認**です。推測URLや他ディストリビューション用開発パッケージは使いません。
+- ALSA: 出荷時の `alsa-lib` が **1.0.28-r0 / core2-32** の実機では、以下の確認済み開発パッケージを使用します。版・アーキテクチャが異なる実機では、そのまま適用せず互換性を確認してください。
+
+開発パッケージは `alsa-lib-dev_1.0.28-r0_core2-32.ipk`、操作者が確認した取得先は [Edison core2-32フィード](http://repo.opkg.net/edison/repo/core2-32/) です。実機では `opkg download alsa-lib-dev` で取得できました。このコマンドは既存のopkgフィード設定・パッケージ索引を参照するため、新しい実機でも同じ取得元・版を利用できることを確認します。取得できない場合や別の版が選ばれた場合は停止し、適合する保存済みパッケージをPCから転送する方法も検討してください。フィード設定・システムパッケージを自動変更しません。
+
+以下は操作者用の手動手順です。`headers` は未作成の名前を選びます。固定SHA-256と照合してから、`ar` で `data.tar.gz` を取り出し、作業フォルダ内だけに展開します。
+
+```sh
+(
+set -eu
+headers=/home/root/robotcontroller-alsa-headers-YYYYMMDD-01
+mkdir "$headers"
+cd "$headers"
+opkg download alsa-lib-dev
+package=alsa-lib-dev_1.0.28-r0_core2-32.ipk
+test -f "$package"
+output=$(openssl dgst -sha256 < "$package")
+digest=$(printf '%s\n' "$output" | awk 'NR==1 {digest=$NF} END {if (NR!=1) exit 1; print tolower(digest)}')
+test "$digest" = 81de5dfb29144afb0edecb6bfbed80c06fa88634ebee9b49a845496c3853acce
+ar t "$package"
+ar p "$package" data.tar.gz > data.tar.gz
+tar -tzf data.tar.gz
+mkdir unpack
+tar -xzf data.tar.gz -C unpack
+test -f unpack/usr/include/alsa/asoundlib.h
+printf 'ALSA_INCLUDE_DIR=%s/unpack/usr/include\n' "$headers"
+)
+```
+
+`opkg download` は取得だけに使用し、`opkg install`・`opkg upgrade` は実行しません。パッケージにライブラリやリンクが含まれていても `/usr/include`・`/usr/lib` へ配置せず、展開先の `usr/include` だけをビルド時に参照します。システム側のALSAは更新・置換しません。Makefileは既存の `/usr/lib/libasound.so.2` を直接リンクします。
 
 Yoctoのパッケージはビルド対象・設定に依存します。[Yoctoのパッケージ資料](https://docs.yoctoproject.org/4.0.26/dev-manual/packages.html)は一般的な説明であり、現在のディストリビューション向け手順を古いEdisonにそのまま適用するものではありません。必要な配布物が見つからない場合は環境準備が残課題です。
 
@@ -213,7 +240,8 @@ git checkout codex/portable-java-build
 git rev-parse HEAD
 # 実機で確認済みのパスを設定します。
 export JAVA_HOME=/home/vstone/java/jdk1.8.0_40
-export ALSA_INCLUDE_DIR=/home/root/alsa-pcm-gate/packages/alsa-lib-dev-unpack/usr/include
+export ALSA_INCLUDE_DIR=/home/root/robotcontroller-alsa-headers-YYYYMMDD-01/unpack/usr/include
+test -f "$ALSA_INCLUDE_DIR/alsa/asoundlib.h"
 sh tools/build_java.sh \
   --dependency-dir /home/root/robotcontroller-deps \
   --output-dir "$work/java-output"
@@ -286,7 +314,9 @@ Java_utils_AlsaPcm_nativeClose
 
 ALSAの `snd_pcm_open`・`snd_pcm_set_params`・`snd_pcm_get_params`・`snd_pcm_writei`・`snd_pcm_recover`・`snd_pcm_drain`・`snd_pcm_drop`・`snd_pcm_close`・`snd_strerror` は動的リンク用の未定義参照として存在し、実機のALSAで提供されることを確認します。静的検証では `ldd` やJVMによるライブラリロードは使いません。
 
-再ビルドした `.so` のSHA-256は記録しますが、過去の受入済みバイナリとの完全一致は要件ではありません。異なるハッシュの生成物を稼働版へ自動的に置き換えません。**ビルド成功は実機動作確認ではありません。** macOS・Edisonの実環境でのビルドとABI確認は操作者による結果待ちです。実機での起動・動作検証とmain統合は、今回とは別に結果を確認してから扱います。
+2026年11月4日に受けた操作者の実機確認報告では、上記の開発ヘッダとJava 8 JDK 1.8.0_40・GCC 4.9.1を使用した `make -C native` が成功しました。生成物はELF32・little-endian・Intel 80386・Type DYNで、`libasound.so.2` への動的リンクとJNIエントリポイント7つを確認しています。`.so` のSHA-256は `1119b2666681885caa03c22c8f16118a2a849aa14b3b7158d1962500e716306b` で、Phase G受入済みバイナリと完全一致しました。詳細は[検証記録](docs/build-environment-validation-2026-11-02.md)を参照してください。
+
+再ビルドした `.so` のSHA-256は記録しますが、別の環境で過去の受入済みバイナリとの完全一致を必須とはしません。異なるハッシュの生成物を稼働版へ自動的に置き換えません。**ビルド成功は実機動作確認ではありません。** EdisonでのJava本体のビルドは成功ログが提示されていないため未検証です。macOSでのビルドも未検証です。実機での起動・動作検証とmain統合は、今回とは別に結果を確認してから扱います。
 
 ## Sotaへの配置と起動（人間による手動操作のみ）
 
