@@ -75,14 +75,59 @@ test -f "$scratch/java output/RobotController/RobotController.jar"
 test -z "$(find "$scratch/java output/RobotController/native" -type f)"
 expect_error 'successful output never reused' 'Output already exists' sh "$script" --dependency-dir "$deps" --output-dir "$scratch/java output"
 echo 'PASS: actual Java 8 compile, 49 classes, manifest, copied dependencies, no overwrite'
+# Exercise the actual checker without recompiling for every malformed fixture.
+sed -n '/^check_class_version() {$/,/^}$/p' "$script" > "$scratch/class-check-function.sh"
+test -s "$scratch/class-check-function.sh"
+cat > "$scratch/check-class.sh" <<'EOF'
+#!/bin/sh
+set -eu
+LC_ALL=C
+export LC_ALL
+out=$1
+. "$2"
+fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+check_class_version "$3"
+EOF
+mkdir "$scratch/class-check" "$scratch/class-tools"
+check_fixture() {
+    sh "$scratch/check-class.sh" "$scratch/class-check" "$scratch/class-check-function.sh" "$1"
+}
+printf '\312\376\272\276\000\000\000\064' > "$scratch/java8.class"
+check_fixture "$scratch/java8.class"
+printf '\312\376\272\276\000\000\000\063' > "$scratch/java7.class"
+expect_error 'Java 7 major version' 'Non-Java-8 class' check_fixture "$scratch/java7.class"
+printf '\312\376\272\276\000\000\001\064' > "$scratch/high-byte.class"
+expect_error 'nonzero major high byte' 'Non-Java-8 class' check_fixture "$scratch/high-byte.class"
+printf '\312\376\272\276\000\000\000' > "$scratch/short.class"
+expect_error 'truncated class version' 'Invalid class version bytes' check_fixture "$scratch/short.class"
+: > "$scratch/empty.class"
+expect_error 'empty class file' 'Invalid class version bytes' check_fixture "$scratch/empty.class"
+expect_error 'unreadable class file' 'Cannot read class version' check_fixture "$scratch/absent.class"
+dd_real=$(command -v dd)
+od_real=$(command -v od)
+printf '#!/bin/sh\n"%s" "$@"\nexit 7\n' "$dd_real" > "$scratch/class-tools/dd"
+chmod +x "$scratch/class-tools/dd"
+expect_error 'dd failure after writing valid bytes' 'Cannot read class version' \
+    env PATH="$scratch/class-tools:$PATH" sh "$scratch/check-class.sh" "$scratch/class-check" "$scratch/class-check-function.sh" "$scratch/java8.class"
+rm "$scratch/class-tools/dd"
+printf '#!/bin/sh\n"%s" "$@"\nexit 7\n' "$od_real" > "$scratch/class-tools/od"
+chmod +x "$scratch/class-tools/od"
+expect_error 'od failure after valid output' 'Cannot dump class version' \
+    env PATH="$scratch/class-tools:$PATH" sh "$scratch/check-class.sh" "$scratch/class-check" "$scratch/class-check-function.sh" "$scratch/java8.class"
+printf '#!/bin/sh\nprintf "0000000 000 064 junk\\n0000002\\n"\n' > "$scratch/class-tools/od"
+expect_error 'malformed od output' 'Invalid class version bytes' \
+    env PATH="$scratch/class-tools:$PATH" sh "$scratch/check-class.sh" "$scratch/class-check" "$scratch/class-check-function.sh" "$scratch/java8.class"
+echo 'PASS: class-version regression checks'
 # A restricted PATH really hides both preferred hash tools (not failing stubs).
 openssl_real=$(command -v openssl) || { echo 'OpenSSL is required for fallback tests' >&2; exit 1; }
 mkdir "$scratch/openssl-bin"
-for tool in sh git find sort awk od cmp cp date tr sed dirname basename mkdir cat; do
+for tool in sh git find sort awk dd od cmp cp date tr sed dirname basename mkdir cat; do
     resolved=$(command -v "$tool")
     printf '#!/bin/sh\nexec "%s" "$@"\n' "$resolved" > "$scratch/openssl-bin/$tool"
     chmod +x "$scratch/openssl-bin/$tool"
 done
+# Emulate the Edison od option subset, and use it for a complete build below.
+printf '#!/bin/sh\n[ "$#" -eq 2 ] && [ "$1" = -b ] || exit 2\nexec "%s" "$@"\n' "$od_real" > "$scratch/openssl-bin/od"
 printf '#!/bin/sh\nexec "%s" "$@"\n' "$openssl_real" > "$scratch/openssl-bin/openssl"
 chmod +x "$scratch/openssl-bin/openssl"
 # Resolve JDK tools before hiding the normal PATH; JAVA_HOME still takes precedence.

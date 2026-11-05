@@ -4,6 +4,20 @@ set -eu
 LC_ALL=C
 export LC_ALL
 fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+check_class_version() {
+    # Use only od -b for Edison BusyBox compatibility. Keep binary NULs out of shell variables
+    # and check dd and od separately so a parser cannot hide an I/O failure.
+    dd if="$1" of="$out/class-version.bin" bs=1 skip=6 count=2 \
+        2> "$out/class-version-dd.log" || fail "Cannot read class version: $1"
+    dump=$(od -b "$out/class-version.bin") || fail "Cannot dump class version: $1"
+    version=$(printf '%s\n' "$dump" | awk '
+        NR==1 && NF==3 && $1=="0000000" &&
+            $2 ~ /^[0-3][0-7][0-7]$/ && $3 ~ /^[0-3][0-7][0-7]$/ {bytes=$2 " " $3; first=1}
+        NR==2 && NF==1 && $1=="0000002" {last=1}
+        END {if (NR!=2 || !first || !last) exit 1; print bytes}
+    ') || fail "Invalid class version bytes: $1"
+    [ "$version" = '000 064' ] || fail "Non-Java-8 class: $1 ($version)"
+}
 usage() {
     printf '%s\n' 'Usage: sh tools/build_java.sh --dependency-dir DIR --output-dir NEW_DIR' \
         'Java 8 JDK: set JAVA_HOME, or put java, javac, jar on PATH.' \
@@ -42,7 +56,7 @@ case $out in "$root"|"$root"/*) fail 'Output must be outside the Git worktree' ;
 case $deps$out$root in *:*) fail 'Paths must not contain a colon' ;; esac
 case $deps$out$root in *'
 '*) fail 'Paths must not contain a newline' ;; esac
-for tool in git find sort awk od cmp cp date tr sed; do
+for tool in git find sort awk dd od cmp cp date tr sed; do
     command -v "$tool" >/dev/null 2>&1 || fail "Required command is unavailable: $tool"
 done
 if command -v sha256sum >/dev/null 2>&1; then
@@ -147,8 +161,7 @@ cmp "$out/classes.txt" "$out/packaged-classes.txt" || fail 'JAR class inventory 
 class_count=0
 while IFS= read -r class; do
     cmp "$out/classes/$class" "$out/inspect/$class" || fail "Packaged class mismatch: $class"
-    version=$(od -An -tu1 -j 6 -N 2 "$out/inspect/$class" | awk '{$1=$1;print}')
-    [ "$version" = '0 52' ] || fail "Non-Java-8 class: $class ($version)"
+    check_class_version "$out/inspect/$class"
     class_count=$((class_count + 1))
 done < "$out/classes.txt"
 [ -f "$out/inspect/main/App.class" ] || fail 'main/App.class is missing'

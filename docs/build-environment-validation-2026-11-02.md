@@ -112,3 +112,15 @@ READMEには新しいSotaでも準備できるよう、新規の `robotcontrolle
 **Java本体のEdisonビルドは、成功ログが提示されていないため未検証のまま。** JNI用Makefileによる `utils/AlsaPcm.java` のコンパイル成功を、RobotController全体のJavaビルド成功とは扱わない。今回の報告はJNIビルドと静的検証の成功であり、実機でのJVM起動や音声・サーボ・LEDの動作検証を新たに行った記録ではない。
 
 今回の変更対象はREADMEと本記録のみ。Java/JNIソース、Makefile、通信プロトコル、各ビルドスクリプトは未変更。両文書のシェル例10件を `dash -n` で確認し、パス・パッケージ名・取得元・ハッシュ・検証範囲の整合性、旧ヘッダパスの不存在、`git diff --check` と変更対象の差分確認が成功した。記載した取得・展開・ビルドコマンドは自動エージェントから実行していない。mainへの統合とブランチ削除は行わない。
+
+## 追補：BusyBox od対応（2026年11月5日）
+
+操作者のEdison実行報告ではJavaコンパイルは成功したが、BusyBox v1.22.1の `od` が `-A` を受け付けず、後続のclassファイル検証で停止した。これはJava本体のビルド・生成物検証全体の成功を示す結果ではなく、修正後のEdisonでの一連の成功は引き続き未確認。
+
+`build_java.sh` のclass検証を、`dd bs=1 skip=6 count=2` でmajor versionの2バイトを出力先内の一時ファイルへ抽出し、`od -b` で8進表記を確認する方式に変更した。Java 8のmajor version 52（big-endianの `00 34`、8進表記の `000 064`）のみを許可する。バイナリをシェル変数へ入れず、dd・odの終了コードを個別に確認する。短い読み取り、空のファイル、不正なod出力、別のmajor versionを拒否し、従来のbaseline・依存ハッシュ・Manifest・クラス内容等の条件も維持する。
+
+回帰テストは実装の検証関数を取り出して実行し、Java 8、Java 7、上位バイトが非ゼロのmajor version、途中で切れたバイト列、空・不存在ファイル、正常に見える結果を返しながら異常終了するdd・od、不正なod出力を対象とする。さらにOpenSSL経路の全体ビルドでは `-b` 以外のオプションを拒否するodラッパーを使用する。これはBusyBoxのオプション制約の模擬であり、実BusyBox v1.22.1による再実行ではない。
+
+PC上のWindows / Git for Windows / Java 8環境で回帰テストが成功した。通常のGNU od経路と、OpenSSL・オプション制限od経路の両方で23ソース・49クラスのビルドとmajor version 52・Manifest・依存ハッシュの検証が成功した。既存の異常引数・依存不足/不一致・JDKバージョン・baseline・上書き防止の試験も通過した。両スクリプトの `dash -n`、`git diff --check`、変更禁止対象の差分なしを確認した。macOS、Linux/Edisonの実環境での修正後実行は未実施。
+
+今回の変更対象は2つのシェルスクリプトと本記録のみ。Javaソース、JNIソース、Makefile、既存Windowsビルドスクリプトは変更しない。実機への接続・操作、mainへの統合は行わない。
