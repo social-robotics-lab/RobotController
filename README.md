@@ -6,6 +6,8 @@ Sota・CommUなどをTCP経由で制御するJavaプログラムです。従来�
 
 Sotaでの音声ストリーミングは実機受入済みです。長時間再生時のまれなALSA XRUN・音声途切れの調査は継続中です。受入結果は[検証記録](docs/phase-g-result-2026-09-16.md)を参照してください。
 
+**※リリース版は[こちら](https://github.com/social-robotics-lab/RobotController/releases/tag/v2026.11.12)からダウンロード・インストールしてください。**
+
 ## 対応ロボットと動作環境
 
 - 従来の制御経路にはSota・CommU・Dogの実装があります。`System.properties`の`ROBOT_TYPE`で選択します。
